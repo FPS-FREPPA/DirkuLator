@@ -1,4 +1,4 @@
-// ProsperoEden - Sample data for the launcher preview on a PC (no console, no game files).
+// DirkuLator - Sample data for the launcher preview on a PC (no console, no game files).
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -225,12 +225,12 @@ ui::Home FakeServices::home()
     if (!setup_ready)
         home.status = fill(tr("Setup required: {0} Open Settings, Game files to choose the folder that "
                               "holds your keys, firmware and roms folders (or add the files to {1}), "
-                              "then reopen ProsperoEden."),
+                              "then reopen DirkuLator."),
                            {fill(tr("Missing or empty keys/prod.keys in {0}."), {"/data/eden-nx2"}),
                             "/data/eden-nx2"});
     else if (!crash_report.empty())
     {
-        home.status = fill(tr("ProsperoEden stopped because of an error. A report was saved to {0}."), {crash_report});
+        home.status = fill(tr("DirkuLator stopped because of an error. A report was saved to {0}."), {crash_report});
         home.launch_failed = true;
     }
     else if (!launch_error.empty())

@@ -1,4 +1,4 @@
-// ProsperoEden - Launcher settings: the category list and its dialogs.
+// DirkuLator - Launcher settings: the category list and its dialogs.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -951,7 +951,7 @@ void Launcher::press_dialog(Key key)
     else if (modal_ == Modal::diagnostics && option_ == 2)
     {
         // Update notices: the check and its answer come as the app opens.
-        say(tr("Saved. Applies the next time ProsperoEden opens."));
+        say(tr("Saved. Applies the next time DirkuLator opens."));
     }
     apply_look();
     cue(sound);

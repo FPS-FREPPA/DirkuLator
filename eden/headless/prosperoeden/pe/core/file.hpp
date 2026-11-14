@@ -1,4 +1,4 @@
-// ProsperoEden - Whole-file reads for launcher assets.
+// DirkuLator - Whole-file reads for launcher assets.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

@@ -44,6 +44,8 @@ extern "C" void eden_jit_path_counters(unsigned core, unsigned long long* out) _
 namespace Common {
 // Address space Eden's sparse tables span and the memory they hold (src/memory_pages.cpp).
 void SparseUsage(std::size_t* reserved, std::size_t* committed) noexcept;
+// The span of the game's own memory and the memory behind it (src/memory_pages.cpp).
+void GuestMemoryUsage(std::size_t* span, std::size_t* held) noexcept;
 } // namespace Common
 
 namespace Eden::Performance {
@@ -198,7 +200,7 @@ void CheckWorkerTopology() {
     std::array<unsigned, 64> apics{};
     unsigned count = 0, seen = 0, smt_shift = 0;
     bool valid = __get_cpuid_max(0, nullptr) >= 0xb;
-    bool changed = false;
+    bool changed = false, apic_repeated = false;
     for (unsigned cpu = 0; valid && cpu < 64; ++cpu) {
         if (!CPU_ISSET(cpu, &original)) continue;
         cpuset_t one{};
@@ -210,9 +212,10 @@ void CheckWorkerTopology() {
         // Validate every allowed logical CPU, not just the first seven cores.
         // A masked/constant APIC answer cannot establish an SMT topology.
         const unsigned shift = a & 31;
-        if (!b || ((c >> 8) & 0xff) != 1 || shift >= 16 ||
-            (seen && shift != smt_shift) ||
-            std::find(apics.begin(), apics.begin() + seen, d) != apics.begin() + seen) {
+        const bool well_formed = b && ((c >> 8) & 0xff) == 1 && shift < 16 && !(seen && shift != smt_shift);
+        const bool repeated = std::find(apics.begin(), apics.begin() + seen, d) != apics.begin() + seen;
+        if (!well_formed || repeated) {
+            apic_repeated = well_formed && repeated;
             valid = false;
             break;
         }
@@ -226,6 +229,23 @@ void CheckWorkerTopology() {
         worker_cpus[count++] = cpu;
     }
     if (changed) RestoreAffinity(original);
+    // Some firmware answers CPUID 0xb with one APIC ID on every CPU. The console's CPU is fixed: eight
+    // cores of two threads, numbered in pairs. /data/eden-nx2/cpu-pinning-off.txt keeps the OS mask.
+    if (apic_repeated && !std::getenv("EDEN_NX2_NO_CPU_PIN")) {
+        count = 0;
+        cpu_core.fill(-1);
+        for (unsigned cpu = 0; cpu < 64; ++cpu) {
+            if (!CPU_ISSET(cpu, &original)) continue;
+            const unsigned core = cpu / 2;
+            cpu_core[cpu] = static_cast<int>(core);
+            if (count == cores.size() ||
+                std::find(cores.begin(), cores.begin() + count, core) != cores.begin() + count) continue;
+            cores[count] = core;
+            worker_cpus[count++] = cpu;
+        }
+        valid = true;
+        std::printf("EDEN_WORKER_TOPOLOGY_FIXED_LAYOUT distinct_cores=%u\n", count);
+    }
     worker_topology_ready = valid && count == cores.size();
     if (worker_topology_ready) {
         unsigned long long spare = 0, siblings = 0;
@@ -422,6 +442,14 @@ extern "C" unsigned eden_heap_arenas_created(void) __attribute__((weak));
 extern "C" std::size_t eden_heap_committed(void) __attribute__((weak));
 extern "C" std::uint64_t eden_vulkan_memory_bytes(void) __attribute__((weak));
 extern "C" std::size_t eden_heap_large_held(unsigned* blocks) __attribute__((weak));
+// The heap census's report (heap_arenas.inc): every 30 s and when the heap has grown, written here
+// rather than from inside an allocation.
+extern "C" void eden_heap_census_report(void) __attribute__((weak));
+// The direct-memory event ring (src/direct_memory.c, 041).
+extern "C" std::int64_t eden_direct_events_held(void) __attribute__((weak));
+extern "C" void eden_direct_events_print(void) __attribute__((weak));
+// Fiber stacks: alive, size, deepest use (src/common/fiber.cpp, layer 99zzzzu, every 30 s).
+extern "C" void eden_fiber_stacks_report(void) __attribute__((weak));
 #ifdef PS5_NATIVE
 extern "C" std::int64_t sceKernelGetDirectMemorySize();
 extern "C" std::int32_t sceKernelAvailableDirectMemorySize(std::int64_t, std::int64_t, std::size_t, std::int64_t*,
@@ -679,6 +707,8 @@ void RecordHle(const char* service, unsigned command, long long ns) {
 }
 
 void ReportSessionMemory(const char* phase, unsigned session) {
+    if (eden_heap_census_report) eden_heap_census_report();
+    if (eden_fiber_stacks_report) eden_fiber_stacks_report();
     unsigned large_blocks = 0;
     const std::size_t large = eden_heap_large_held ? eden_heap_large_held(&large_blocks) : 0;
     std::size_t table_span = 0, table_held = 0;
@@ -705,12 +735,27 @@ void ReportSessionMemory(const char* phase, unsigned session) {
 #ifdef PS5_NATIVE
     t_ms = ::Eden::BootTrace::detail::Milliseconds();
 #endif
+    // guest_held: the game's own memory (EDEN_CRAM held), at the same 1 s cadence when short: in
+    // 028b it grew 720 MiB in the last 3 s while graphics and heap stayed flat. Kept after t_ms so
+    // readers of the earlier fields keep working.
+    std::size_t guest_span = 0, guest_held = 0;
+    ::Common::GuestMemoryUsage(&guest_span, &guest_held);
     std::printf("EDEN_SESSION_MEMORY phase=%s session=%u total=%lld free=%lld largest_free=%zu regions=%u "
-                "heap_pieces=%zu heap_large=%zu large_blocks=%u tables=%zu gpu_bytes=%llu t_ms=%ld\n",
+                "heap_pieces=%zu heap_large=%zu large_blocks=%u tables=%zu gpu_bytes=%llu t_ms=%ld guest_held=%zu\n",
                 phase, session, total, free_bytes, largest, regions,
                 eden_heap_committed ? eden_heap_committed() : std::size_t{0}, large, large_blocks, table_held,
-                static_cast<unsigned long long>(eden_vulkan_memory_bytes ? eden_vulkan_memory_bytes() : 0), t_ms);
+                static_cast<unsigned long long>(eden_vulkan_memory_bytes ? eden_vulkan_memory_bytes() : 0), t_ms,
+                guest_held);
+    // 041: the app's own direct memory (every allocation through src/direct_memory.c) against what
+    // the pool has given out: the difference is held by callers outside the app's link.
+    if (eden_direct_events_held) {
+        const long long app = eden_direct_events_held();
+        const long long used = total > 0 && free_bytes >= 0 ? total - free_bytes : -1;
+        std::printf("EDEN_DMEM_HELD t_ms=%ld app_mib=%lld pool_used_mib=%lld outside_app_mib=%lld\n", t_ms, app >> 20,
+                    used >= 0 ? used >> 20 : -1LL, used >= 0 ? (used - app) >> 20 : -1LL);
+    }
     std::fflush(stdout);
+    if (eden_direct_events_print) eden_direct_events_print();
 }
 
 void ReportGpuThread(unsigned frame) {

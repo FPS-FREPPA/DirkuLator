@@ -1,4 +1,4 @@
-// ProsperoEden - Launcher: the profiles (Settings > Profiles): who is playing, a new one, another
+// DirkuLator - Launcher: the profiles (Settings > Profiles): who is playing, a new one, another
 // name, one taken off the list.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later

@@ -1,4 +1,4 @@
-// ProsperoEden - The launcher: home, library, settings and their dialogs.
+// DirkuLator - The launcher: home, library, settings and their dialogs.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

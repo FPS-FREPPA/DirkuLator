@@ -1,0 +1,1160 @@
+Texture handles read from memory that the buffer tracker cannot pin to one table are computed for
+each draw from the same words the shader reads (Lichii 561f87abe). They failed whole pipelines with
+"Unresolved buffer-backed texture expression", about 120 of them when OoT's world loads, and with
+them most of its task/mesh draws. Also more instruction forms as Lichii lowers them: USHF.L.U32,
+register shifts, TLD.SCR, HSETP2 with a register. Bumps the translator salt.
+
+diff --git a/src/shader_recompiler/environment.h b/src/shader_recompiler/environment.h
+--- a/src/shader_recompiler/environment.h
++++ b/src/shader_recompiler/environment.h
+@@ -68,6 +68,7 @@
+     IR::U32 dynamic_offset;
+     u32 count;
+     bool has_secondary;
++    u32 handle_program{~0U}; ///< index in Info::handle_programs for a handle computed per draw
+     BufferTextureSource buffer_source{};
+ };
+ 
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -541,6 +541,26 @@
+         };
+         // Bindless samples the scalar forms below do not cover (arrays, LOD, offsets, depth): the
+         // handle goes first among Maxwell TEX.B's meta registers.
++        const auto bind_texture_buffer = [&](u32 binding) {
++            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding) return false;
++            result.required_texture_buffer = binding;
++            return true;
++        };
++        const auto right_shift_u64_low = [&](u32 target, u32 low, u32 high, u32 shift) {
++            mov_imm(250, 32);
++            emit(0x5c10000000000000ULL | predicate | 251 | (u64{250} << 8) |
++                 (u64{shift} << 20) | (u64{1} << 48));
++            emit(0x5c28000000000000ULL | predicate | 250 | (u64{low} << 8) | (u64{shift} << 20));
++            emit(0x5c48000000000000ULL | predicate | 251 | (u64{high} << 8) | (u64{251} << 20));
++            emit(0x5c40000000000000ULL | predicate | 250 | (u64{250} << 8) |
++                 (u64{251} << 20) | (u64{1} << 41) | (u64{7} << 48));
++            emit(0x1c00000000000000ULL | predicate | 251 | (u64{shift} << 8) |
++                 (u64{0xffffffe0U} << 20));
++            emit(0x5c28000000000000ULL | predicate | 251 | (u64{high} << 8) | (u64{251} << 20));
++            emit(0x5c40000000000000ULL | predicate | target | (u64{250} << 8) |
++                 (u64{251} << 20) | (u64{1} << 41) | (u64{7} << 48));
++        };
++        const u32 high_uniform_base = reserved_register;
+         const auto bindless_general_tex = [&]() -> bool {
+             constexpr std::array<u32, 8> coordinate_count{1, 2, 3, 3, 2, 3, 0, 4};
+             constexpr std::array<u32, 8> maxwell_type{0, 2, 4, 6, 1, 3, 0, 7};
+@@ -750,15 +770,24 @@
+                  (u64{a.swizzle} << 47) | (u64{insn.Bits(71, 1)} << 49) | (u64{insn.Bits(80, 1)} << 6));
+             break;
+         }
+-        case 0x434: { // HSETP2.GEU.AND, packed immediate and independent half predicates.
+-            constexpr u32 variable = (0x3fU << 17) | (3U << 10);
+-            if (insn.Bits(16, 8) || (insn.words[2] & ~variable) != 0x0380e000U ||
+-                (insn.Bits(74, 2) != 0 && insn.Bits(74, 2) != 2))
+-                return fail(index, "native packed half predicate mode");
+-            const auto a = half_source(0), b = half_source(2);
+-            emit(0x5d20000000000000ULL | predicate | (u64{insn.Bits(81, 3)} << 3) |
+-                 insn.Bits(84, 3) | (u64{a.reg} << 8) | (u64{b.reg} << 20) |
+-                 (u64{14} << 35) | (u64{7} << 39) | (u64{a.swizzle} << 47));
++        case 0x434: { // HSETP2 with a register (B swizzle 60-61, abs 62, neg 63) or an
++                      // immediate half pair: A swizzle 74-75 (neg 72, abs 73),
++                      // combine 69-70, H_AND 71, compare 76-79, FTZ 80, P/Q 81-86, input 87-90.
++            u64 source = u64{250} << 20;
++            if (opcode == 0x234) {
++                if ((insn.words[1] & 0x0fffff00U) || insn.Bits(64, 5))
++                    return fail(index, "native half comparison mode");
++                source = (u64{insn.Bits(32, 8)} << 20) | (u64{insn.Bits(60, 2)} << 28) |
++                         (u64{insn.Bits(62, 1)} << 30) | (u64{insn.Bits(63, 1)} << 31);
++            } else {
++                mov_imm(250, insn.words[1]);
++            }
++            emit(0x5d20000000000000ULL | predicate | insn.Bits(84, 3) | (u64{insn.Bits(81, 3)} << 3) |
++                 (u64{insn.Bits(80, 1)} << 6) | (u64{insn.Bits(24, 8)} << 8) | source |
++                 (u64{insn.Bits(76, 4)} << 35) | (u64{insn.Bits(87, 3)} << 39) |
++                 (u64{insn.Bits(90, 1)} << 42) | (u64{insn.Bits(72, 1)} << 43) |
++                 (u64{insn.Bits(73, 1)} << 44) | (u64{insn.Bits(69, 2)} << 45) |
++                 (u64{insn.Bits(74, 2)} << 47) | (u64{insn.Bits(71, 1)} << 49));
+             break;
+         }
+         case 0x233: case 0x433: case 0x633: { // HSET2, packed half comparisons and predicate combination.
+@@ -1389,28 +1418,40 @@
+             }
+             break;
+         }
+-        case 0x899: { // USHF; accept a zero word outside the selected half.
++        case 0x899: { // USHF.L.U32; accept a zero word outside the selected half.
+             const u32 dst = insn.Bits(16, 8), low = insn.Bits(24, 8), high = insn.Bits(64, 8);
+-            const bool signed_right = insn.words[2] == (0x08011400U | high);
+-            const bool unsigned_right = insn.words[2] == (0x08011600U | high);
+-            if ((signed_right || unsigned_right) && low == 63 && high < 63 &&
+-                dst < 63 && insn.words[1] <= 32) {
+-                emit(0x3828000000000000ULL | predicate | uniform_register(static_cast<u32>(dst)) |
+-                     (u64{uniform_register(high)} << 8) | (u64{insn.words[1]} << 20) | (u64{signed_right} << 48));
+-                break;
+-            }
+-            // USHF.R.U32 URd, URa, n, URZ: a logical right shift of the low word.
+-            if (insn.words[2] == 0x0800163f && low < 63 && dst < 63 && insn.words[1] <= 32) {
+-                emit(0x3828000000000000ULL | predicate | uniform_register(static_cast<u32>(dst)) |
+-                     (u64{uniform_register(low)} << 8) | (u64{insn.words[1]} << 20));
+-                break;
+-            }
+-            const bool high_result = insn.words[2] == (0x08010600U | high) && low == 63 && high < 63;
+-            const bool low_result = insn.words[2] == 0x0800063f && low < 63;
+-            if (dst >= 63 || insn.words[1] > 32 || (!high_result && !low_result))
++            const u32 dst_reg = uniform_register(dst), low_reg = uniform_register(low);
++            const u32 high_reg = uniform_register(high);
++            const bool dst_ok = dst != 63 && dst_reg != ~0U;
++            const bool low_ok = low != 63 && low_reg != ~0U, high_ok = high != 63 && high_reg != ~0U;
++            if (dst_ok && low_reg != ~0U && high_reg != ~0U &&
++                insn.words[2] == (0x08001200U | high)) {
++                mov_imm(252, insn.words[1]);
++                right_shift_u64_low(dst_reg, low_reg, high_reg, 252);
++                break;
++            }
++            // A UPn guard (Hyrule Warriors: @UP1 USHF.R.U32.HI) is swapped into the predicate above.
++            if (insn.words[2] == (0x08011400U | high) && low == 63 && high_ok &&
++                dst_ok && insn.words[1] <= 32) {
++                emit(0x3828000000000000ULL | predicate | dst_reg |
++                     (u64{high_reg} << 8) | (u64{insn.words[1]} << 20) | (u64{1} << 48));
++                break;
++            }
++            // Logical right shifts of one register (bit 76 right, bit 80 high word, bits 73-74
++            // U32): USHF.R.U32 URd, URa, n, URZ and USHF.R.U32.HI URd, URZ, n, URb.
++            const bool right_low = insn.words[2] == 0x0800163f && low_ok;
++            const bool right_high = insn.words[2] == (0x08011600U | high) && low == 63 && high_ok;
++            if ((right_low || right_high) && dst_ok && insn.words[1] <= 32) {
++                emit(0x3828000000000000ULL | predicate | dst_reg |
++                     (u64{right_high ? high_reg : low_reg} << 8) | (u64{insn.words[1]} << 20));
++                break;
++            }
++            const bool high_result = insn.words[2] == (0x08010600U | high) && low == 63 && high_ok;
++            const bool low_result = insn.words[2] == 0x0800063f && low_ok;
++            if (!dst_ok || insn.words[1] > 32 || (!high_result && !low_result))
+                 return fail(index, "native uniform shift mode");
+-            emit(0x3848000000000000ULL | predicate | uniform_register(static_cast<u32>(dst)) |
+-                 (u64{uniform_register(high_result ? high : low)} << 8) | (u64{insn.words[1]} << 20));
++            emit(0x3848000000000000ULL | predicate | dst_reg |
++                 (u64{high_result ? high_reg : low_reg} << 8) | (u64{insn.words[1]} << 20));
+             break;
+         }
+         case 0xb82: { // LDC.64 indexed byte offset
+@@ -1692,22 +1733,46 @@
+             emit(base(0x3828000000000000ULL) | (u64{insn.words[1]} << 8) |
+                 (u64{1} << 39) | (u64{1} << 40));
+             break;
+-        case 0x219: case 0xa19: case 0xc19: { // U32 shifts with a zero word outside the selected result.
+-            // .L takes the low result of {RZ:low}; .R.HI the high result of {high:RZ}; .R without
+-            // .HI the low result of {RZ:low}, the low word shifted right.
++        case 0x219: case 0xa19: case 0xc19: { // U32 register (or cbuf, 0xa19, or uniform, 0xc19) shifts with a zero word outside the selected result.
+             const u32 low = insn.Bits(24, 8), high = insn.Bits(64, 8);
+-            const u32 shift = opcode == 0xa19 ? materialize(2, 0, 251, false, false) :
+-                              opcode == 0xc19 ? uniform_register(insn.Bits(32, 8)) : insn.Bits(32, 8);
++            const bool constant = opcode == 0xa19;
++            // A constant shift amount is loaded into R251 once the form is known.
++            const u32 shift = opcode == 0xc19 ? uniform_register(insn.Bits(32, 8)) : constant ? 251U : insn.Bits(32, 8);
++            const bool shift_operand = constant ? valid_cbuf() && !insn.Bits(62, 2) : insn.words[1] <= 255;
++            const auto load_shift = [&] { if (constant) materialize(2, 0, 251, false, false); };
+             const bool right = insn.Bits(76, 1) != 0, high_result = insn.Bits(80, 1) != 0;
+-            if ((opcode != 0xa19 && insn.words[1] > 255) || shift == ~0U ||
+-                (opcode == 0xa19 && insn.Bits(62, 2)) || insn.Bits(73, 2) != 3 ||
++            if (opcode == 0x219 && shift_operand &&
++                (insn.words[2] & ~0xffU) == 0x00001200U) {
++                right_shift_u64_low(static_cast<u32>(dest), low, high, shift);
++                break;
++            }
++            if (opcode == 0x219 && low == 255 && shift_operand &&
++                (insn.words[2] & ~0x8ffU) == 0x00011400U &&
++                !(insn.words[3] & 0xc00001ffU)) {
++                const bool wrap = insn.Bits(75, 1) != 0;
++                if (!wrap)
++                    emit(0x3820000000000000ULL | predicate | 250 | (u64{shift} << 8) |
++                         (u64{31} << 20) | (u64{7} << 39));
++                emit(base(0x5c28000000000000ULL) | (u64{high} << 8) |
++                     (u64{wrap ? shift : 250U} << 20) | (u64{1} << 39) | (u64{1} << 48));
++                break;
++            }
++            // SHF.R.U32 of the low word with a zero high word: a plain logical right shift.
++            if (right && !high_result && high == 255 && insn.Bits(73, 2) == 3 && shift != ~0U &&
++                shift_operand &&
++                (insn.words[2] & ~(0x000118ffU | (opcode == 0xc19 ? 0x08000000U : 0U))) == 0x00000600U) {
++                load_shift();
++                emit(base(0x5c28000000000000ULL) | (u64{low} << 8) | (u64{shift} << 20));
++                break;
++            }
++            if (!shift_operand || insn.Bits(73, 2) != 3 || shift == ~0U ||
+                 (insn.words[2] & ~(0x000118ffU | (opcode == 0xc19 ? 0x08000000U : 0U))) != 0x00000600U ||
+-                (right ? (high_result ? low != 255 : high != 255) : (high_result || high != 255)))
++                (right ? (!high_result || low != 255) : (high_result ? low != 255 : high != 255)))
+                 return fail(index, "native register shift mode");
+-            const bool right_low = right && !high_result;
++            load_shift();
+             emit(base(right ? 0x5cf8000000000000ULL : 0x5bf8000000000000ULL) |
+-                (u64{right_low ? low : right ? high : 255U} << 8) | (u64{shift} << 20) |
+-                (u64{right ? 255U : low} << 39) | (u64{insn.Bits(75, 1)} << 50));
++                (u64{right ? high : 255U} << 8) | (u64{shift} << 20) |
++                (u64{right ? 255U : (high_result ? high : low)} << 39) | (u64{insn.Bits(75, 1)} << 50));
+             break;
+         }
+         case 0x300: case 0xd00: { // FLO, including a uniform source.
+@@ -2301,50 +2366,27 @@
+             }
+             break;
+         }
+-        case 0xb66: { // TLD.SCR.LZ, direct texel fetch
+-            const u32 mask = insn.Bits(72, 4);
++        case 0xb66: { // TLD.SCR, direct texel fetch at level zero (.LZ) or a given level (.LL)
++            u32 mask = insn.Bits(72, 4);
++            const bool level = insn.Bits(87, 3) == 3; // .LL: the level follows the coordinates
++            // Bit 76: a texel offset after the coordinates and level. 2D only, as Maxwell TLDS
++            // 2D.LZ.AOFFI (x, y in Ra, Ra+1, offsets in Rb) or 2D.LL.AOFFI (level, offsets in Rb, Rb+1).
++            const bool offsets = insn.Bits(76, 1) != 0;
++            // Bit 79 (.F16): half2 results, (c0, c1) in the first register and (c2, c3) in the
++            // second, as Maxwell TLDS.F16 (bit 59 clear) stores them.
++            const bool half = insn.Bits(79, 1) != 0;
+             const u32 dimension = insn.Bits(61, 3);
+             const bool array = dimension == 5;
+             const bool volume = dimension == 2;
+             u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
+-            const u32 second_dest = insn.Bits(64, 8);
+-            const bool split = second_dest != 255;
+-            if (dimension == 1 && insn.Bits(79, 1) && insn.Bits(87, 3) == 3) {
+-                // Scalar 2D FP16 fetch with explicit LOD: XY at A, LOD at B.
+-                const u32 count = std::popcount(mask), binding = insn.Bits(54, 5);
+-                if (!insn.Bits(60, 1) || insn.Bits(59, 1) ||
+-                    (insn.words[2] & ~(0x04000000U | 0xfffU)) != 0x019e8000 ||
+-                    !mask || binding >= 18 || insn.Bits(40, 14) > 0x1fff ||
+-                    (source_a & 1) || source_a + 1 >= 246 || source_b >= 246 ||
+-                    dest >= 246 || (count > 2 ? second_dest >= 246 : split))
+-                    return fail(index, "native half explicit-LOD texel fetch mode");
+-                const bool bindless = result.required_texture_buffer != ~0U && result.required_texture_buffer != binding;
+-                if (!bindless) result.required_texture_buffer = binding;
+-                const auto copy = [&](u32 target, u32 source) {
+-                    emit(0x5c98000000000000ULL | predicate | target |
+-                         (u64{15} << 39) | (u64{source} << 20));
+-                };
+-                // Snapshot inputs before writing outputs that may alias XY or LOD.
+-                copy(250, source_a); copy(251, source_a + 1); copy(249, source_b);
+-                if (bindless)
+-                    emit(0x4c98000000070000ULL | 248 | (u64{15} << 39) |
+-                         (u64{insn.Bits(40, 14)} << 20) | (u64{binding} << 34));
+-                emit((bindless ? 0xdd00000000000000ULL : 0xdc00000000000000ULL) | predicate | 250 |
+-                     (u64{250} << 8) | (u64{bindless ? 248U : 249U} << 20) |
+-                     (u64{2} << 28) | (u64{mask} << 31) | (u64{7} << 51) | (u64{1} << 55) |
+-                     (u64{insn.Bits(90, 1)} << 49) |
+-                     (bindless ? 0 : u64{insn.Bits(40, 14)} << 36));
+-                // TLD packs selected F32 channels. Convert pairs to native half outputs;
+-                // an odd final channel gets zero in the high half, like Maxwell TLDS.
+-                const auto pack = [&](u32 target, u32 low, u32 high) {
+-                    emit(0x5ca8000000000000ULL | predicate | 246 | (u64{1} << 8) | (u64{2} << 10) | (u64{low} << 20));
+-                    emit(0x5ca8000000000000ULL | predicate | 247 | (u64{1} << 8) | (u64{2} << 10) | (u64{high} << 20));
+-                    emit(0x5c18000000000000ULL | predicate | target | (u64{246} << 8) | (u64{247} << 20) | (u64{16} << 39));
+-                };
+-                pack(static_cast<u32>(dest), 250, count > 1 ? 251U : 255U);
+-                if (count > 2) pack(second_dest, 252, count > 3 ? 253U : 255U);
+-                break;
++            u32 second_dest = insn.Bits(64, 8);
++            // TLDS has no single-register G+B or R+B swizzle (Hyrule Warriors fetches G+B): take
++            // alpha too, as the three-channel form, with it going to scratch R246.
++            if (second_dest == 255 && (mask == 5 || mask == 6)) {
++                mask |= 8;
++                second_dest = 246;
+             }
++            const bool split = second_dest != 255;
+             constexpr std::array<u32, 8> rg_masks{1, 2, 4, 8, 3, 9, 10, 12};
+             constexpr std::array<u32, 5> rgba_masks{7, 11, 13, 14, 15};
+             u32 swizzle = ~0U;
+@@ -2354,45 +2396,72 @@
+                 for (u32 i = 0; i < rg_masks.size(); ++i) if (rg_masks[i] == mask) swizzle = i;
+             }
+             if (!insn.Bits(60, 1) || (dimension != 0 && dimension != 1 && !array && !volume) ||
+-                swizzle == ~0U || insn.Bits(76, 5) ||
+-                insn.Bits(81, 3) != 7 || insn.Bits(87, 3) != 1 ||
++                swizzle == ~0U || (insn.Bits(76, 5) & ~0x9U) || (half && array && level) ||
++                (offsets && (dimension != 1 || (source_a & 1) || source_a >= 254 || source_b == 255 ||
++                             (level && ((source_b & 1) || source_b >= 254)))) ||
++                insn.Bits(81, 3) != 7 || (insn.Bits(87, 3) != 1 && !level) || (level && volume) ||
++                (level && dimension == 1 && ((source_a & 1) || source_a >= 254)) ||
++                (level && array && ((source_b & 1) || source_b >= 254)) ||
+                 insn.Bits(59, 1) ||
+                 insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18 ||
+-                dest == 255 || (mask & (mask - 1) && ((dest & 1) || dest >= 254)) ||
+-                (split && mask == 15 && ((second_dest & 1) || second_dest >= 254)) ||
++                dest == 255 || (!half && (mask & (mask - 1)) && ((dest & 1) || dest >= 254)) ||
++                (!half && split && mask == 15 && ((second_dest & 1) || second_dest >= 254)) ||
+                 (array && ((source_a & 1) || source_a >= 249)) ||
+                 (volume && ((source_a & 1) || source_a >= 254))) {
+                 return fail(index, "native texel fetch mode or descriptor binding");
+             }
+             const u32 binding = insn.Bits(54, 5);
+-            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding) {
++            if (!bind_texture_buffer(binding)) {
++                if (level || offsets || half)
++                    return fail(index, "native texture descriptor buffer conflict");
++                // A second descriptor buffer: TLD.B (LZ) with the coordinates in R250.. (array
++                // index or Z after Ra) and the handle, loaded from that buffer, in R253.
+                 const auto copy = [&](u32 target, u32 source) {
+                     emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
+                 };
+                 copy(250, source_a);
+                 if (array || volume) copy(251, source_a + 1);
+                 if (dimension != 0) copy(array || volume ? 252 : 251, source_b);
+-                emit(0x4c98000000000000ULL | predicate | 253 | (u64{15} << 39) |
+-                     (u64{insn.Bits(40, 14)} << 20) | (u64{binding} << 34));
+-                emit(0xdd00000000000000ULL | predicate | 250 | (u64{250} << 8) |
+-                     (u64{253} << 20) | (u64{array ? 3U : volume ? 4U : dimension == 0 ? 0U : 2U} << 28) |
+-                     (u64{mask} << 31) | (u64{7} << 51) | (u64{insn.Bits(90, 1)} << 49));
+-                const u32 count = std::popcount(mask);
+-                for (u32 component = 0; component < count; ++component)
+-                    copy(component < 2 ? static_cast<u32>(dest) + component : second_dest + component - 2,
+-                         250 + component);
++                emit(0x4c98000000070000ULL | 253 | (u64{15} << 39) | (u64{insn.Bits(40, 14)} << 20) |
++                     (u64{binding} << 34));
++                emit(0xdd00000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{253} << 20) |
++                     (u64{array ? 3U : volume ? 4U : dimension == 0 ? 0U : 2U} << 28) | (u64{mask} << 31) |
++                     (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
++                const u32 components = static_cast<u32>(std::popcount(mask));
++                for (u32 i = 0; i < components; ++i)
++                    copy(i < 2 || !split ? static_cast<u32>(dest) + i : second_dest + (i - 2), 250 + i);
++                break;
++            }
++            if (array && level) {
++                // TLDS has no array form with a level: TLD takes (layer, x, y) from Ra and the level
++                // from Rb (layer, x in Ra, Ra+1; y, level in Rb, Rb+1 here). Results come out packed,
++                // then go where the Ampere destinations (Rd, Rd+1, then the second pair) take them.
++                for (u32 i = 0; i < 2; ++i) {
++                    emit(0x5c98000000000000ULL | predicate | (250 + i) | (u64{15} << 39) | (u64{source_a + i} << 20));
++                    emit(0x5c98000000000000ULL | predicate | (252 + i) | (u64{15} << 39) | (u64{source_b + i} << 20));
++                }
++                emit(0xdc00000000000000ULL | predicate | 246 | (u64{250} << 8) | (u64{253} << 20) |
++                     (u64{3} << 28) | (u64{mask} << 31) | (u64{insn.Bits(40, 14)} << 36) |
++                     (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51) | (u64{1} << 55));
++                const u32 components = static_cast<u32>(std::popcount(mask));
++                for (u32 i = 0; i < components; ++i) {
++                    const u32 target = !split || i < 2 ? static_cast<u32>(dest) + i : second_dest + (i - 2);
++                    if (target != 255 && (split || i < 2))
++                        emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{246 + i} << 20));
++                }
+                 break;
+             }
+-            result.required_texture_buffer = binding;
+             if (array) {
+                 emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_a + 1} << 20));
+                 emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) | (u64{source_b} << 20));
+                 source_b = 250;
+             }
+-            emit(0xda00000000000000ULL | predicate | dest | (u64{source_a} << 8) |
+-                 (u64{source_b} << 20) | (u64{insn.Bits(64, 8)} << 28) |
++            emit((0xda00000000000000ULL & ~(u64{half} << 59)) | predicate | dest | (u64{source_a} << 8) |
++                 (u64{source_b} << 20) | (u64{second_dest} << 28) |
+                  (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
+-                 (u64{swizzle} << 50) | (u64{array ? 8U : volume ? 7U : dimension == 0 ? 0U : 2U} << 53));
++                 (u64{swizzle} << 50) |
++                 (u64{offsets ? (level ? 12U : 4U)
++                      : array ? 8U : volume ? 7U : dimension == 0 ? (level ? 1U : 0U) : (level ? 5U : 2U)} << 53));
+             break;
+         }
+         case 0xfae: { // LDGSTS.E.BYPASS.128, completed synchronously with zero fill.
+diff --git a/src/shader_recompiler/frontend/ampere/native.h b/src/shader_recompiler/frontend/ampere/native.h
+--- a/src/shader_recompiler/frontend/ampere/native.h
++++ b/src/shader_recompiler/frontend/ampere/native.h
+@@ -43,7 +43,7 @@
+ 
+ // Salt mixed into the pipeline cache identity of native-translated programs. Bump it whenever the
+ // native translation changes so cached results of an older translator are never reused.
+-inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a0000dULL;
++inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a0000eULL;
+ 
+ // Maxwell Location offset of native instruction `index` (same mapping the lowering uses).
+ [[nodiscard]] constexpr u32 LocationOf(u32 index) {
+diff --git a/src/shader_recompiler/ir_opt/texture_pass.cpp b/src/shader_recompiler/ir_opt/texture_pass.cpp
+--- a/src/shader_recompiler/ir_opt/texture_pass.cpp
++++ b/src/shader_recompiler/ir_opt/texture_pass.cpp
+@@ -5,6 +5,10 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <algorithm>
++#include <queue>
++#include <unordered_map>
++#include <unordered_set>
++#include <vector>
+ #include <bit>
+ #include <optional>
+ #include "common/container/unordered_map.h"
+@@ -341,15 +345,20 @@
+ }
+ 
+ // Cached variants of existing helpers
++// A handle computed per draw has no descriptor to read at translation time: assume an ordinary
++// floating-point 2D texture, the instruction's own type deciding the rest.
+ static inline TextureType ReadTextureTypeCached(Environment& env, const ConstBufferAddr& cbuf) {
++    if (cbuf.handle_program != ~0U) return TextureType::Color2D;
+     return env.ReadTextureType(GetTextureHandleCached(env, cbuf));
+ }
+ static inline TexturePixelFormat ReadTexturePixelFormatCached(Environment& env,
+                                                                 const ConstBufferAddr& cbuf) {
++    if (cbuf.handle_program != ~0U) return TexturePixelFormat::A8B8G8R8_UNORM;
+     return env.ReadTexturePixelFormat(GetTextureHandleCached(env, cbuf));
+ }
+ static inline bool IsTexturePixelFormatIntegerCached(Environment& env,
+                                                         const ConstBufferAddr& cbuf) {
++    if (cbuf.handle_program != ~0U) return false;
+     return env.IsTexturePixelFormatInteger(GetTextureHandleCached(env, cbuf));
+ }
+ 
+@@ -367,12 +376,387 @@
+ 
+ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environment& env, const HostTranslateInfo& host_info, const IR::Block* block);
+ 
++bool IsMemoryLoad(IR::Opcode opcode) {
++    switch (opcode) {
++    case IR::Opcode::LoadGlobalU8: case IR::Opcode::LoadGlobalS8: case IR::Opcode::LoadGlobalU16:
++    case IR::Opcode::LoadGlobalS16: case IR::Opcode::LoadGlobal32: case IR::Opcode::LoadGlobal64:
++    case IR::Opcode::LoadGlobal128: case IR::Opcode::LoadStorageU8: case IR::Opcode::LoadStorageS8:
++    case IR::Opcode::LoadStorageU16: case IR::Opcode::LoadStorageS16: case IR::Opcode::LoadStorage32:
++    case IR::Opcode::LoadStorage64: case IR::Opcode::LoadStorage128: case IR::Opcode::LoadLocal:
++    case IR::Opcode::LoadSharedU8: case IR::Opcode::LoadSharedS8: case IR::Opcode::LoadSharedU16:
++    case IR::Opcode::LoadSharedS16: case IR::Opcode::LoadSharedU32: case IR::Opcode::LoadSharedU64:
++    case IR::Opcode::LoadSharedU128:
++        return true;
++    default:
++        return false;
++    }
++}
++
+ std::optional<ConstBufferAddr> Track(const IR::Value& value, Environment& env, const HostTranslateInfo& host_info, const IR::Block* block) {
+-    return IR::BreadthFirstSearch(value, [&env, &host_info, block](const IR::Inst* inst) {
+-        return TryGetConstBuffer(inst, env, host_info, block);
+-    }, [&](IR::Value operand) { return ResolveConditionalPhi(operand, block); });
++    // A value loaded from memory is not a constant buffer word, whatever its address is built
++    // from: the search does not look into a load's operands (a handle read from a storage
++    // buffer would otherwise be taken from the buffer's address in the constant buffer).
++    const IR::Value start{ResolveConditionalPhi(value, block)};
++    if (start.IsImmediate()) {
++        return std::nullopt;
++    }
++    std::unordered_set<const IR::Inst*> visited;
++    std::queue<const IR::Inst*> queue;
++    queue.push(start.InstRecursive());
++    visited.insert(start.InstRecursive());
++    while (!queue.empty()) {
++        const IR::Inst* const inst{queue.front()};
++        queue.pop();
++        if (const std::optional result = TryGetConstBuffer(inst, env, host_info, block)) {
++            return result;
++        }
++        if (IsMemoryLoad(inst->GetOpcode())) {
++            continue;
++        }
++        for (size_t arg = inst->NumArgs(); arg--;) {
++            const IR::Value arg_value{ResolveConditionalPhi(inst->Arg(arg), block)};
++            if (arg_value.IsImmediate()) {
++                continue;
++            }
++            const IR::Inst* const arg_inst{arg_value.InstRecursive()};
++            if (visited.insert(arg_inst).second) {
++                queue.push(arg_inst);
++            }
++        }
++    }
++    return std::nullopt;
++}
++
++// Builds a handle program (shader_info.h) for a value computed from constant buffer and storage
++// buffer words; false when the value depends on anything else.
++thread_local IR::Opcode g_handle_failure{IR::Opcode::Void}; // the first operation not supported
++
++bool IsUndefined(IR::Opcode opcode) {
++    return opcode == IR::Opcode::UndefU1 || opcode == IR::Opcode::UndefU8 ||
++           opcode == IR::Opcode::UndefU16 || opcode == IR::Opcode::UndefU32 ||
++           opcode == IR::Opcode::UndefU64;
++}
++
++// Values already emitted by the program being built, by the slot that keeps them.
++thread_local std::unordered_map<const IR::Inst*, u32>* g_handle_slots{};
++
++bool BuildHandleNode(const IR::Value& value, std::vector<u32>& code, int& budget,
++                     const IR::Block* block);
++
++bool BuildHandleProgram(const IR::Value& value, std::vector<u32>& code, int& budget,
++                        const IR::Block* block) {
++    using Op = HandleOp;
++    if (value.IsImmediate()) {
++        return BuildHandleNode(value, code, budget, block);
++    }
++    std::unordered_map<const IR::Inst*, u32> local_slots;
++    const bool outermost = g_handle_slots == nullptr;
++    if (outermost) {
++        g_handle_slots = &local_slots;
++    }
++    const IR::Inst* const inst{value.InstRecursive()};
++    bool result;
++    if (const auto it = g_handle_slots->find(inst); it != g_handle_slots->end()) {
++        if (it->second == ~0U) {
++            // Reached again while building it: a loop carries the value, which no single
++            // evaluation can give.
++            g_handle_failure = IR::Opcode::Phi;
++            result = false;
++        } else {
++            code.push_back(static_cast<u32>(Op::Load));
++            code.push_back(it->second);
++            result = true;
++        }
++    } else {
++        g_handle_slots->emplace(inst, ~0U);
++        const size_t start = code.size();
++        result = BuildHandleNode(value, code, budget, block);
++        g_handle_slots->erase(inst);
++        if (!result) {
++            code.resize(start);
++        }
++        if (result && inst->UseCount() > 1 && g_handle_slots->size() < 256) {
++            const u32 slot = static_cast<u32>(
++                std::ranges::count_if(*g_handle_slots, [](const auto& entry) { return entry.second != ~0U; }));
++            g_handle_slots->emplace(inst, slot);
++            code.push_back(static_cast<u32>(Op::Tee));
++            code.push_back(slot);
++        }
++    }
++    if (outermost) {
++        g_handle_slots = nullptr;
++    }
++    return result;
++}
++
++bool BuildHandleNode(const IR::Value& value, std::vector<u32>& code, int& budget,
++                     const IR::Block* block) {
++    if (--budget < 0) {
++        return false;
++    }
++    using Op = HandleOp;
++    const auto emit = [&](Op op) { code.push_back(static_cast<u32>(op)); };
++    if (value.IsImmediate()) {
++        emit(Op::Immediate);
++        code.push_back(value.Type() == IR::Type::U1 ? (value.U1() ? 1U : 0U) : value.U32());
++        return true;
++    }
++    const IR::Inst* const inst{value.InstRecursive()};
++    const auto build = [&](size_t arg) { return BuildHandleProgram(inst->Arg(arg), code, budget, block); };
++    const auto binary = [&](Op op) {
++        if (!build(0) || !build(1)) return false;
++        emit(op);
++        return true;
++    };
++    const auto unary = [&](Op op) {
++        if (!build(0)) return false;
++        emit(op);
++        return true;
++    };
++    // A word of a constant buffer read or of a storage buffer load, at byte offset +extra.
++    const auto load_word = [&](const IR::Inst* source, u32 extra) {
++        const auto add_extra = [&] {
++            if (extra != 0) {
++                emit(Op::Immediate);
++                code.push_back(extra);
++                emit(Op::Add);
++            }
++        };
++        switch (source->GetOpcode()) {
++        case IR::Opcode::GetCbufU32:
++        case IR::Opcode::GetCbufU32x2: {
++            const IR::Value index{source->Arg(0)};
++            const IR::Value offset{source->Arg(1)};
++            if (!index.IsImmediate()) return false;
++            if (offset.IsImmediate()) {
++                emit(Op::Cbuf);
++                code.push_back(index.U32());
++                code.push_back(offset.U32() + extra);
++                return true;
++            }
++            if (!BuildHandleProgram(offset, code, budget, block)) return false;
++            add_extra();
++            emit(Op::CbufDynamic);
++            code.push_back(index.U32());
++            return true;
++        }
++        case IR::Opcode::LoadStorage32:
++        case IR::Opcode::LoadStorage64:
++        case IR::Opcode::LoadStorage128: {
++            const IR::Value binding{source->Arg(0)};
++            if (!binding.IsImmediate()) return false;
++            if (!BuildHandleProgram(source->Arg(1), code, budget, block)) return false;
++            add_extra();
++            emit(Op::Storage);
++            code.push_back(binding.U32());
++            return true;
++        }
++        default:
++            return false;
++        }
++    };
++    switch (inst->GetOpcode()) {
++    case IR::Opcode::Identity:
++    case IR::Opcode::ConditionRef:
++    case IR::Opcode::ShuffleIndex: // a value made uniform (R2UR): the same in every lane
++    case IR::Opcode::VoteAny:      // of a condition on per-draw words only, the same in every lane
++    case IR::Opcode::VoteAll:
++        return build(0);
++    case IR::Opcode::GetCbufU32:
++    case IR::Opcode::LoadStorage32:
++        return load_word(inst, 0);
++    case IR::Opcode::CompositeExtractU32x2: {
++        const IR::Value element{inst->Arg(1)};
++        if (!element.IsImmediate() || inst->Arg(0).IsImmediate()) return false;
++        return load_word(inst->Arg(0).InstRecursive(), element.U32() * 4);
++    }
++    case IR::Opcode::Phi: {
++        // Keep the incoming value that is defined; of two, the one made uniform (the
++        // register-to-uniform move a conditional block makes for the handle).
++        const IR::Value resolved{ResolveConditionalPhi(value, block)};
++        if (resolved.IsImmediate() || resolved.InstRecursive() != inst) {
++            return BuildHandleProgram(resolved, code, budget, block);
++        }
++        std::optional<size_t> chosen;
++        for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
++            const IR::Value incoming{inst->Arg(arg)};
++            if (!incoming.IsImmediate() && IsUndefined(incoming.InstRecursive()->GetOpcode())) {
++                continue;
++            }
++            IR::Value probe{incoming};
++            bool shuffled = false;
++            for (int depth = 0; depth < 8 && !probe.IsImmediate(); ++depth) {
++                const IR::Inst* const probe_inst{probe.InstRecursive()};
++                if (probe_inst->GetOpcode() == IR::Opcode::ShuffleIndex) {
++                    shuffled = true;
++                    break;
++                }
++                if (probe_inst->GetOpcode() != IR::Opcode::Identity) break;
++                probe = probe_inst->Arg(0);
++            }
++            if (!chosen || shuffled) chosen = arg;
++        }
++        if (chosen && build(*chosen)) {
++            return true;
++        }
++        for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
++            const IR::Value incoming{inst->Arg(arg)};
++            if (arg == chosen || (!incoming.IsImmediate() && IsUndefined(incoming.InstRecursive()->GetOpcode()))) {
++                continue;
++            }
++            if (build(arg)) {
++                return true;
++            }
++        }
++        return false;
++    }
++    case IR::Opcode::IAdd32: return binary(Op::Add);
++    case IR::Opcode::ISub32: return binary(Op::Sub);
++    case IR::Opcode::IMul32: return binary(Op::Mul);
++    case IR::Opcode::BitwiseAnd32: return binary(Op::And);
++    case IR::Opcode::BitwiseOr32: return binary(Op::Or);
++    case IR::Opcode::BitwiseXor32: return binary(Op::Xor);
++    case IR::Opcode::ShiftLeftLogical32: return binary(Op::Shl);
++    case IR::Opcode::ShiftRightLogical32: return binary(Op::Shr);
++    case IR::Opcode::ShiftRightArithmetic32: return binary(Op::Sar);
++    case IR::Opcode::INeg32: return unary(Op::Neg);
++    case IR::Opcode::BitwiseNot32: return unary(Op::Not);
++    case IR::Opcode::UMin32: return binary(Op::UMin);
++    case IR::Opcode::UMax32: return binary(Op::UMax);
++    case IR::Opcode::SMin32: return binary(Op::SMin);
++    case IR::Opcode::SMax32: return binary(Op::SMax);
++    case IR::Opcode::SLessThan: return binary(Op::SLt);
++    case IR::Opcode::SLessThanEqual: return binary(Op::SLe);
++    case IR::Opcode::SGreaterThan: return binary(Op::SGt);
++    case IR::Opcode::SGreaterThanEqual: return binary(Op::SGe);
++    case IR::Opcode::ULessThan: return binary(Op::ULt);
++    case IR::Opcode::ULessThanEqual: return binary(Op::ULe);
++    case IR::Opcode::UGreaterThan: return binary(Op::UGt);
++    case IR::Opcode::UGreaterThanEqual: return binary(Op::UGe);
++    case IR::Opcode::IEqual: return binary(Op::Eq);
++    case IR::Opcode::INotEqual: return binary(Op::Ne);
++    case IR::Opcode::LogicalAnd: return binary(Op::LAnd);
++    case IR::Opcode::LogicalOr: return binary(Op::LOr);
++    case IR::Opcode::LogicalXor: return binary(Op::LXor);
++    case IR::Opcode::LogicalNot: return unary(Op::LNot);
++    case IR::Opcode::GetZeroFromOp: // the flag a producing operation sets on its result
++        if (!build(0)) return false;
++        emit(Op::Immediate);
++        code.push_back(0);
++        emit(Op::Eq);
++        return true;
++    case IR::Opcode::GetSignFromOp:
++        if (!build(0)) return false;
++        emit(Op::Immediate);
++        code.push_back(0);
++        emit(Op::SLt);
++        return true;
++    case IR::Opcode::GetCarryFromOp: {
++        // The carry of a 32-bit addition: the sum below an operand.
++        const IR::Value op{inst->Arg(0)};
++        if (op.IsImmediate() || op.InstRecursive()->GetOpcode() != IR::Opcode::IAdd32) {
++            g_handle_failure = inst->GetOpcode();
++            return false;
++        }
++        const IR::Inst* const add{op.InstRecursive()};
++        if (!BuildHandleProgram(op, code, budget, block) ||
++            !BuildHandleProgram(add->Arg(0), code, budget, block)) {
++            return false;
++        }
++        emit(Op::ULt);
++        return true;
++    }
++    case IR::Opcode::BitCastU32F32:
++    case IR::Opcode::BitCastF32U32:
++        return build(0);
++    case IR::Opcode::UndefU1:
++    case IR::Opcode::UndefU32:
++        // Read before any write on some path: no value to compute, take zero.
++        emit(Op::Immediate);
++        code.push_back(0);
++        return true;
++    case IR::Opcode::BitFieldUExtract: {
++        // (base >> offset) & ((1 << count) - 1), the shift by 32 giving the all-ones mask.
++        const auto mask = [&] {
++            emit(Op::Immediate);
++            code.push_back(1);
++            if (!build(2)) return false;
++            emit(Op::Shl);
++            emit(Op::Immediate);
++            code.push_back(1);
++            emit(Op::Sub);
++            return true;
++        };
++        if (!build(0) || !build(1)) return false;
++        emit(Op::Shr);
++        if (!mask()) return false;
++        emit(Op::And);
++        return true;
++    }
++    case IR::Opcode::BitFieldSExtract: {
++        // (base << (32 - offset - count)) >> (32 - count), arithmetic.
++        if (!build(0)) return false;
++        emit(Op::Immediate);
++        code.push_back(32);
++        if (!build(1)) return false;
++        emit(Op::Sub);
++        if (!build(2)) return false;
++        emit(Op::Sub);
++        emit(Op::Shl);
++        emit(Op::Immediate);
++        code.push_back(32);
++        if (!build(2)) return false;
++        emit(Op::Sub);
++        emit(Op::Sar);
++        return true;
++    }
++    case IR::Opcode::BitFieldInsert: {
++        // (base & ~mask) | ((insert << offset) & mask), mask = ((1 << count) - 1) << offset.
++        const auto mask = [&] {
++            emit(Op::Immediate);
++            code.push_back(1);
++            if (!build(3)) return false;
++            emit(Op::Shl);
++            emit(Op::Immediate);
++            code.push_back(1);
++            emit(Op::Sub);
++            if (!build(2)) return false;
++            emit(Op::Shl);
++            return true;
++        };
++        if (!build(0) || !mask()) return false;
++        emit(Op::Not);
++        emit(Op::And);
++        if (!build(1) || !build(2)) return false;
++        emit(Op::Shl);
++        if (!mask()) return false;
++        emit(Op::And);
++        emit(Op::Or);
++        return true;
++    }
++    case IR::Opcode::UClamp32:
++    case IR::Opcode::SClamp32: {
++        const bool is_signed = inst->GetOpcode() == IR::Opcode::SClamp32;
++        if (!build(0) || !build(1)) return false;
++        emit(is_signed ? Op::SMax : Op::UMax);
++        if (!build(2)) return false;
++        emit(is_signed ? Op::SMin : Op::UMin);
++        return true;
++    }
++    case IR::Opcode::SelectU1:
++    case IR::Opcode::SelectU32:
++        if (!build(0) || !build(1) || !build(2)) return false;
++        emit(Op::Select);
++        return true;
++    default:
++        g_handle_failure = inst->GetOpcode();
++        return false;
++    }
+ }
+ 
++// Programs built while making the texture instructions of the pass running on this thread.
++thread_local std::vector<std::vector<u32>>* g_handle_programs{};
++
+ std::optional<u32> TryGetConstant(IR::Value& value, Environment& env) {
+     const IR::Inst* inst = value.InstRecursive();
+     if (inst->GetOpcode() != IR::Opcode::GetCbufU32) {
+@@ -579,6 +963,22 @@
+             return TextureInst{addr, &inst, block};
+         }
+         if (BufferTexture::ContainsLoadedHandle(inst.Arg(0))) {
++            // A handle read from memory that the tracker cannot pin to one table (it depends on a
++            // branch, for one): computed for each draw from the same words the shader reads.
++            std::vector<u32> code;
++            int budget = 4096;
++            g_handle_failure = IR::Opcode::Void;
++            if (g_handle_programs && BuildHandleProgram(inst.Arg(0), code, budget, block)) {
++                auto& programs{*g_handle_programs};
++                auto it{std::ranges::find(programs, code)};
++                if (it == programs.end()) {
++                    programs.push_back(std::move(code));
++                    it = programs.end() - 1;
++                }
++                addr.count = 1;
++                addr.handle_program = static_cast<u32>(it - programs.begin());
++                return TextureInst{addr, &inst, block};
++            }
+             const auto* root = inst.Arg(0).TryInstRecursive();
+             throw NotImplementedException("Unresolved buffer-backed texture expression {} after {} references ({} recovered origins)",
+                 root ? IR::NameOf(root->GetOpcode()) : "immediate", buffer_references, buffer_tracker.ResolvedCount());
+@@ -801,6 +1201,7 @@
+     env.cbuf_word_cache.clear();
+     env.handle_cache.clear();
+     env.track_cache.clear();
++    g_handle_programs = &program.info.handle_programs;
+     TextureInstVector to_replace;
+     u32 buffer_references{};
+     BufferTexture::Tracker buffer_tracker{program};
+@@ -965,6 +1366,7 @@
+                     .secondary_shift_left = cbuf.secondary_shift_left,
+                     .count = count,
+                     .size_shift = size_shift,
++                    .handle_program = cbuf.handle_program,
+                     .buffer_source = cbuf.buffer_source,
+                 });
+                 flags.is_integer.Assign(is_integer ? 1 : 0);
+diff --git a/src/shader_recompiler/shader_info.h b/src/shader_recompiler/shader_info.h
+--- a/src/shader_recompiler/shader_info.h
++++ b/src/shader_recompiler/shader_info.h
+@@ -7,6 +7,9 @@
+ #pragma once
+ 
+ #include <array>
++#include <optional>
++#include <span>
++#include <vector>
+ #include <bitset>
+ #include <map>
+ 
+@@ -240,6 +243,9 @@
+     u32 secondary_shift_left;
+     u32 count;
+     u32 size_shift;
++    /// Index in Info::handle_programs when the handle is computed at draw time (read from a
++    /// storage buffer), ~0 when it is the constant buffer word above.
++    u32 handle_program{~0U};
+ 
+     BufferTextureSource buffer_source{};
+ 
+@@ -383,6 +389,9 @@
+     TextureBufferDescriptors texture_buffer_descriptors;
+     ImageBufferDescriptors image_buffer_descriptors;
+     TextureDescriptors texture_descriptors;
++    /// Texture handles the shader reads from storage buffers, as programs over constant buffer
++    /// and storage buffer words (see EvaluateHandleProgram), evaluated for each draw.
++    std::vector<std::vector<u32>> handle_programs;
+     ImageDescriptors image_descriptors;
+ };
+ 
+@@ -395,4 +404,111 @@
+     return num;
+ }
+ 
++
++/// Operations of a handle program, a stack machine over 32-bit words. Operands follow the
++/// operation code in the program; values are popped right operand first.
++enum class HandleOp : u32 {
++    Immediate,     ///< value
++    Cbuf,          ///< index, offset: the constant buffer word
++    CbufDynamic,   ///< index: the word at the popped byte offset
++    Storage,       ///< binding: the storage buffer word at the popped byte offset
++    Add, Sub, Mul, And, Or, Xor, Shl, Shr, Sar, Neg, Not,
++    UMin, UMax, SMin, SMax,
++    SLt, SLe, SGt, SGe, ULt, ULe, UGt, UGe, Eq, Ne,
++    LAnd, LOr, LXor, LNot,
++    Select, ///< condition, true value, false value
++    Tee,    ///< slot: keeps the top value in the slot (shared subexpressions)
++    Load,   ///< slot: the value kept there
++};
++
++/// Runs a handle program; read_cbuf(index, offset) and read_storage(binding, offset) return the
++/// words it reads. Returns nothing for a malformed program.
++template <typename ReadCbuf, typename ReadStorage>
++std::optional<u32> EvaluateHandleProgram(std::span<const u32> code, ReadCbuf&& read_cbuf,
++                                         ReadStorage&& read_storage) {
++    std::array<u32, 64> stack{};
++    std::array<u32, 256> slots{};
++    size_t size = 0;
++    const auto pop = [&]() -> u32 { return size > 0 ? stack[--size] : 0; };
++    const auto push = [&](u32 value) {
++        if (size < stack.size()) stack[size++] = value;
++    };
++    for (size_t pc = 0; pc < code.size();) {
++        const HandleOp op = static_cast<HandleOp>(code[pc++]);
++        const auto operand = [&]() -> u32 { return pc < code.size() ? code[pc++] : 0; };
++        if (op == HandleOp::Immediate) {
++            push(operand());
++            continue;
++        }
++        if (op == HandleOp::Cbuf) {
++            const u32 index = operand();
++            push(read_cbuf(index, operand()));
++            continue;
++        }
++        if (op == HandleOp::CbufDynamic) {
++            const u32 index = operand();
++            push(read_cbuf(index, pop()));
++            continue;
++        }
++        if (op == HandleOp::Storage) {
++            const u32 binding = operand();
++            push(read_storage(binding, pop()));
++            continue;
++        }
++        if (op == HandleOp::Neg || op == HandleOp::Not || op == HandleOp::LNot) {
++            const u32 a = pop();
++            push(op == HandleOp::Neg ? 0U - a : op == HandleOp::Not ? ~a : (a == 0 ? 1U : 0U));
++            continue;
++        }
++        if (op == HandleOp::Tee) {
++            const u32 slot = operand();
++            if (slot < slots.size() && size > 0) slots[slot] = stack[size - 1];
++            continue;
++        }
++        if (op == HandleOp::Load) {
++            const u32 slot = operand();
++            push(slot < slots.size() ? slots[slot] : 0U);
++            continue;
++        }
++        if (op == HandleOp::Select) {
++            const u32 false_value = pop(), true_value = pop(), condition = pop();
++            push(condition != 0 ? true_value : false_value);
++            continue;
++        }
++        const u32 b = pop(), a = pop();
++        const s32 sa = static_cast<s32>(a), sb = static_cast<s32>(b);
++        switch (op) {
++        case HandleOp::Add: push(a + b); break;
++        case HandleOp::Sub: push(a - b); break;
++        case HandleOp::Mul: push(a * b); break;
++        case HandleOp::And: push(a & b); break;
++        case HandleOp::Or: push(a | b); break;
++        case HandleOp::Xor: push(a ^ b); break;
++        case HandleOp::Shl: push(b >= 32 ? 0U : a << b); break;
++        case HandleOp::Shr: push(b >= 32 ? 0U : a >> b); break;
++        case HandleOp::Sar: push(static_cast<u32>(sa >> (b >= 32 ? 31 : b))); break;
++        case HandleOp::UMin: push(a < b ? a : b); break;
++        case HandleOp::UMax: push(a > b ? a : b); break;
++        case HandleOp::SMin: push(static_cast<u32>(sa < sb ? sa : sb)); break;
++        case HandleOp::SMax: push(static_cast<u32>(sa > sb ? sa : sb)); break;
++        case HandleOp::SLt: push(sa < sb); break;
++        case HandleOp::SLe: push(sa <= sb); break;
++        case HandleOp::SGt: push(sa > sb); break;
++        case HandleOp::SGe: push(sa >= sb); break;
++        case HandleOp::ULt: push(a < b); break;
++        case HandleOp::ULe: push(a <= b); break;
++        case HandleOp::UGt: push(a > b); break;
++        case HandleOp::UGe: push(a >= b); break;
++        case HandleOp::Eq: push(a == b); break;
++        case HandleOp::Ne: push(a != b); break;
++        case HandleOp::LAnd: push(a != 0 && b != 0); break;
++        case HandleOp::LOr: push(a != 0 || b != 0); break;
++        case HandleOp::LXor: push((a != 0) != (b != 0)); break;
++        default: return std::nullopt;
++        }
++    }
++    if (size != 1) return std::nullopt;
++    return stack[0];
++}
++
+ } // namespace Shader
+diff --git a/src/video_core/CMakeLists.txt b/src/video_core/CMakeLists.txt
+--- a/src/video_core/CMakeLists.txt
++++ b/src/video_core/CMakeLists.txt
+@@ -240,6 +240,7 @@
+     shader_cache.h
+     shader_environment.cpp
+     shader_environment.h
++    shader_handle_program.h
+     shader_notify.cpp
+     shader_notify.h
+     smaa_area_tex.h
+diff --git a/src/video_core/renderer_opengl/gl_compute_pipeline.cpp b/src/video_core/renderer_opengl/gl_compute_pipeline.cpp
+--- a/src/video_core/renderer_opengl/gl_compute_pipeline.cpp
++++ b/src/video_core/renderer_opengl/gl_compute_pipeline.cpp
+@@ -12,6 +12,7 @@
+ #include "video_core/renderer_opengl/gl_compute_pipeline.h"
+ #include "video_core/renderer_opengl/gl_shader_manager.h"
+ #include "video_core/renderer_opengl/gl_shader_util.h"
++#include "video_core/shader_handle_program.h"
+ 
+ namespace OpenGL {
+ 
+@@ -105,6 +106,20 @@
+     const auto& cbufs{qmd.const_buffer_config};
+     const bool via_header_index{qmd.linked_tsc != 0};
+     const auto read_handle{[&](const auto& desc, u32 index) {
++        if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&>) {
++            if (desc.handle_program != ~0U) {
++                // Read by the shader from a storage buffer: computed for this dispatch.
++                return TexturePair(VideoCommon::EvaluateTextureHandle(
++                                       info, desc.handle_program, *gpu_memory,
++                                       [&](u32 cbuf) -> GPUVAddr {
++                                           return cbuf < cbufs.size() &&
++                                                          ((qmd.const_buffer_enable_mask >> cbuf) & 1) != 0
++                                                      ? cbufs[cbuf].Address()
++                                                      : GPUVAddr{};
++                                       }),
++                                   via_header_index);
++            }
++        }
+         ASSERT(((qmd.const_buffer_enable_mask >> desc.cbuf_index) & 1) != 0);
+         const u32 index_offset{index << desc.size_shift};
+         const u32 offset{desc.cbuf_offset + index_offset};
+diff --git a/src/video_core/renderer_opengl/gl_graphics_pipeline.cpp b/src/video_core/renderer_opengl/gl_graphics_pipeline.cpp
+--- a/src/video_core/renderer_opengl/gl_graphics_pipeline.cpp
++++ b/src/video_core/renderer_opengl/gl_graphics_pipeline.cpp
+@@ -17,6 +17,7 @@
+ #include "video_core/renderer_opengl/gl_shader_manager.h"
+ #include "video_core/renderer_opengl/gl_shader_util.h"
+ #include "video_core/renderer_opengl/gl_state_tracker.h"
++#include "video_core/shader_handle_program.h"
+ #include "video_core/shader_notify.h"
+ #include "video_core/texture_cache/texture_cache.h"
+ 
+@@ -308,6 +309,19 @@
+         }
+         const auto& cbufs{maxwell3d->state.shader_stages[stage].const_buffers};
+         const auto read_handle{[&](const auto& desc, u32 index) {
++            if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&>) {
++                if (desc.handle_program != ~0U) {
++                    // Read by the shader from a storage buffer: computed for this draw.
++                    return TexturePair(VideoCommon::EvaluateTextureHandle(
++                                           info, desc.handle_program, *gpu_memory,
++                                           [&](u32 cbuf) -> GPUVAddr {
++                                               return cbuf < cbufs.size() && cbufs[cbuf].enabled
++                                                          ? cbufs[cbuf].address
++                                                          : GPUVAddr{};
++                                           }),
++                                       via_header_index);
++                }
++            }
+             ASSERT(cbufs[desc.cbuf_index].enabled);
+             const u32 index_offset{index << desc.size_shift};
+             const u32 offset{desc.cbuf_offset + index_offset};
+diff --git a/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp b/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+--- a/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+@@ -18,6 +18,7 @@
+ #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+ #include "video_core/renderer_vulkan/vk_scheduler.h"
+ #include "video_core/renderer_vulkan/vk_update_descriptor.h"
++#include "video_core/shader_handle_program.h"
+ #include "video_core/shader_notify.h"
+ #include "video_core/vulkan_common/vulkan_device.h"
+ #include "video_core/vulkan_common/vulkan_wrapper.h"
+@@ -185,6 +186,20 @@
+     const auto& cbufs{qmd.const_buffer_config};
+     const bool via_header_index{qmd.linked_tsc != 0};
+     const auto read_handle{[&](const auto& desc, u32 index) {
++        if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&>) {
++            if (desc.handle_program != ~0U) {
++                // Read by the shader from a storage buffer: computed for this dispatch.
++                return TexturePair(VideoCommon::EvaluateTextureHandle(
++                                       info, desc.handle_program, gpu_memory,
++                                       [&](u32 cbuf) -> GPUVAddr {
++                                           return cbuf < cbufs.size() &&
++                                                          ((qmd.const_buffer_enable_mask >> cbuf) & 1) != 0
++                                                      ? cbufs[cbuf].Address()
++                                                      : GPUVAddr{};
++                                       }),
++                                   via_header_index);
++            }
++        }
+         ASSERT(((qmd.const_buffer_enable_mask >> desc.cbuf_index) & 1) != 0);
+         const u32 index_offset{index << desc.size_shift};
+         const u32 offset{desc.cbuf_offset + index_offset};
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -35,6 +35,7 @@
+ #include "video_core/renderer_vulkan/vk_shader_util.h"
+ #include "video_core/renderer_vulkan/vk_texture_cache.h"
+ #include "video_core/renderer_vulkan/vk_update_descriptor.h"
++#include "video_core/shader_handle_program.h"
+ #include "video_core/shader_notify.h"
+ #include "video_core/native_vprs.h"
+ #include "video_core/texture_cache/texture_cache.h"
+@@ -536,6 +537,19 @@
+         VideoCommon::NativeResourceMemo::Table<VideoCommon::NativeResourceMemo::TableKey, bool, 0, 8> prepared_texture_tables;
+ #endif
+         const auto read_handle{[&](const auto& desc, u32 index) {
++            if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&>) {
++                if (desc.handle_program != ~0U) {
++                    // Read by the shader from a storage buffer: computed for this draw.
++                    return TexturePair(VideoCommon::EvaluateTextureHandle(
++                                           info, desc.handle_program, *gpu_memory,
++                                           [&](u32 cbuf) -> GPUVAddr {
++                                               return cbuf < cbufs.size() && cbufs[cbuf].enabled
++                                                          ? cbufs[cbuf].address
++                                                          : GPUVAddr{};
++                                           }),
++                                       via_header_index);
++                }
++            }
+             ASSERT(cbufs[desc.cbuf_index].enabled);
+             if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&>) {
+                 if (desc.buffer_source.enabled) {
+diff --git a/src/video_core/shader_handle_program.h b/src/video_core/shader_handle_program.h
+--- a/src/video_core/shader_handle_program.h
++++ b/src/video_core/shader_handle_program.h
+@@ -0,0 +1,39 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "common/common_types.h"
++#include "shader_recompiler/shader_info.h"
++#include "video_core/memory_manager.h"
++
++namespace VideoCommon {
++
++/// The texture handle a shader reads from a storage buffer, computed from the current constant
++/// buffer and storage buffer words (Shader::Info::handle_programs). cbuf_address(index) is the
++/// bound constant buffer's address, 0 when none is bound.
++template <typename CbufAddress>
++u32 EvaluateTextureHandle(const Shader::Info& info, u32 program, Tegra::MemoryManager& gpu_memory,
++                          CbufAddress&& cbuf_address) {
++    return Shader::EvaluateHandleProgram(
++               info.handle_programs[program],
++               [&](u32 index, u32 offset) -> u32 {
++                   const GPUVAddr base{cbuf_address(index)};
++                   return base != 0 ? gpu_memory.Read<u32>(base + offset) : 0U;
++               },
++               [&](u32 binding, u32 offset) -> u32 {
++                   if (binding >= info.storage_buffers_descriptors.size()) {
++                       return 0U;
++                   }
++                   const auto& descriptor{info.storage_buffers_descriptors[binding]};
++                   const GPUVAddr cbuf{cbuf_address(descriptor.cbuf_index)};
++                   if (cbuf == 0) {
++                       return 0U;
++                   }
++                   const GPUVAddr base{gpu_memory.Read<u64>(cbuf + descriptor.cbuf_offset)};
++                   return base != 0 ? gpu_memory.Read<u32>(base + offset) : 0U;
++               })
++        .value_or(0U);
++}
++
++} // namespace VideoCommon

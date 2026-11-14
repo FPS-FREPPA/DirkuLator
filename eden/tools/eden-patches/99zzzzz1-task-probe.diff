@@ -1,0 +1,267 @@
+Build 048 (diagnostic only): EDEN_TASK_PROBE. About every 30 frames the first emulated task draw of a
+submission (alternately one aimed at a shadow-sized depth target and one at the 1440-wide view) has its
+distribution arguments and the start of the mesh arena copied to host memory; its triangles are classified
+(unused slots, bad index, NaN, behind, off screen, outside the depth range, kept) and logged with the draw's
+target, viewport and depth state. Rendering unchanged.
+
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -15,6 +15,8 @@
+ #include <algorithm>
+ #include <array>
+ #include <bit>
++#include <cmath>
++#include <cstring>
+ #include <unordered_map>
+ #include <cstdio>
+ #include <memory>
+@@ -223,6 +225,141 @@
+ }
+ } // Anonymous namespace
+ 
++void RasterizerVulkan::RecordTaskProbeCopy() {
++    task_probe.copy_pending = false;
++    constexpr u64 args_bytes{Shader::Backend::SPIRV::MESH_EMULATION_ARGS_WORDS * 4};
++    task_probe.args_copy = staging_pool.Request(args_bytes, MemoryUsage::Download);
++    task_probe.output_copy = staging_pool.Request(task_probe.output_bytes, MemoryUsage::Download);
++    scheduler.RequestOutsideRenderPassOperationContext();
++    scheduler.Record([arena = task_probe.arena, args_source = task_probe.args_source,
++                      args_offset = task_probe.args_offset, args_copy = task_probe.args_copy,
++                      output_copy = task_probe.output_copy,
++                      bytes = task_probe.output_bytes](vk::CommandBuffer cmdbuf) {
++        const VkMemoryBarrier written{
++            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
++            .pNext = nullptr,
++            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
++            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
++        };
++        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
++                               written);
++        cmdbuf.CopyBuffer(args_source, args_copy.buffer,
++                          VkBufferCopy{args_offset, args_copy.offset, args_bytes});
++        cmdbuf.CopyBuffer(arena, output_copy.buffer, VkBufferCopy{0, output_copy.offset, bytes});
++        const VkMemoryBarrier copied{
++            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
++            .pNext = nullptr,
++            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
++            .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
++        };
++        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, copied);
++    });
++    task_probe.tick = scheduler.CurrentTick();
++    task_probe.read_pending = true;
++}
++
++void RasterizerVulkan::ReadTaskProbe() {
++    task_probe.read_pending = false;
++    const TaskProbe& probe{task_probe};
++    const auto span_word = [](const StagingBufferRef& ref, u64 bytes, u64 index) -> u32 {
++        const std::span<u8> span{ref.mapped_span};
++        const u64 at{index * 4};
++        if (span.size() < 4 || at + 4 > bytes || at + 4 > span.size()) {
++            return 0;
++        }
++        u32 value;
++        std::memcpy(&value, span.data() + at, sizeof(value));
++        return value;
++    };
++    constexpr u64 args_bytes{Shader::Backend::SPIRV::MESH_EMULATION_ARGS_WORDS * 4};
++    const u32 dispatched{span_word(probe.args_copy, args_bytes, 0)};
++    const u32 requested{span_word(probe.args_copy, args_bytes, Shader::Backend::SPIRV::MESH_EMULATION_ARGS_REQUESTED)};
++    const u32 base{span_word(probe.args_copy, args_bytes, Shader::Backend::SPIRV::MESH_EMULATION_ARGS_BASE)};
++    const u64 words_available{probe.output_bytes / 4};
++    const u32 groups{static_cast<u32>((std::min<u64>)(
++        dispatched, base < words_available ? (words_available - base) / probe.block_words : 0))};
++    const auto word = [&](u64 index) { return span_word(probe.output_copy, probe.output_bytes, index); };
++    const auto position = [&](u64 block, u32 vertex) {
++        std::array<f32, 4> result{0.0f, 0.0f, 0.0f, 1.0f};
++        for (u32 element = 0; element < 4; ++element) {
++            const u32 line{probe.position_lines[element]};
++            if (line != ~0U) {
++                result[element] = std::bit_cast<f32>(word(block + u64{vertex} * probe.vertex_lines + line));
++            }
++        }
++        return result;
++    };
++    u64 triangles{}, degenerate{}, bad_index{}, nan{}, behind{}, outside_xy{}, outside_z{}, kept{};
++    f32 min_x{1e30f}, max_x{-1e30f}, min_y{1e30f}, max_y{-1e30f}, min_z{1e30f}, max_z{-1e30f};
++    std::string sample;
++    for (u32 group = 0; group < groups; ++group) {
++        const u64 block{base + u64{group} * probe.block_words};
++        const u64 index_base{block + u64{probe.max_vertices} * probe.vertex_lines};
++        for (u32 primitive = 0; primitive < probe.max_primitives; ++primitive) {
++            const std::array<u32, 3> indices{word(index_base + primitive * 3),
++                                             word(index_base + primitive * 3 + 1),
++                                             word(index_base + primitive * 3 + 2)};
++            if (indices[0] == indices[1] && indices[1] == indices[2]) {
++                ++degenerate;
++                continue;
++            }
++            ++triangles;
++            if (indices[0] >= probe.max_vertices || indices[1] >= probe.max_vertices ||
++                indices[2] >= probe.max_vertices) {
++                ++bad_index;
++                continue;
++            }
++            bool any_nan{}, all_behind{true}, any_inside_xy{}, any_inside_z{};
++            for (const u32 vertex : indices) {
++                const auto p{position(block, vertex)};
++                if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2]) ||
++                    !std::isfinite(p[3])) {
++                    any_nan = true;
++                    continue;
++                }
++                const f32 w{p[3]};
++                all_behind &= w <= 0.0f;
++                if (w > 0.0f) {
++                    any_inside_xy |= std::abs(p[0]) <= w && std::abs(p[1]) <= w;
++                    any_inside_z |= p[2] >= -w && p[2] <= w;
++                    min_x = (std::min)(min_x, p[0] / w);
++                    max_x = (std::max)(max_x, p[0] / w);
++                    min_y = (std::min)(min_y, p[1] / w);
++                    max_y = (std::max)(max_y, p[1] / w);
++                    min_z = (std::min)(min_z, p[2] / w);
++                    max_z = (std::max)(max_z, p[2] / w);
++                }
++            }
++            if (sample.size() < 360 && triangles <= 2) {
++                for (const u32 vertex : indices) {
++                    const auto p{position(block, vertex)};
++                    sample += fmt::format(" ({:.4g} {:.4g} {:.4g} {:.4g})", p[0], p[1], p[2], p[3]);
++                }
++                sample += " |";
++            }
++            if (any_nan) {
++                ++nan;
++            } else if (all_behind) {
++                ++behind;
++            } else if (!any_inside_xy) {
++                ++outside_xy;
++            } else if (!any_inside_z) {
++                ++outside_z;
++            } else {
++                ++kept;
++            }
++        }
++    }
++    const std::string line{fmt::format(
++        "EDEN_TASK_PROBE n={} kind={} tasks={} dispatched={} requested={} base={} decoded_groups={} "
++        "triangles={} unused_slots={} bad_index={} nan={} behind={} offscreen_xy={} outside_depth={} kept={} "
++        "ndc x[{:.3g},{:.3g}] y[{:.3g},{:.3g}] z[{:.3g},{:.3g}] target: {} sample:{}\n",
++        ++task_probe.number, probe.shadow ? "shadow" : "view", probe.tasks, dispatched, requested, base,
++        groups, triangles, degenerate, bad_index, nan, behind, outside_xy, outside_z, kept, min_x, max_x,
++        min_y, max_y, min_z, max_z, probe.target, sample)};
++    std::fputs(line.c_str(), stderr);
++}
++
+ const RasterizerVulkan::MeshArena& RasterizerVulkan::AcquireMeshArena() {
+     const u64 tick{scheduler.CurrentTick()};
+     if (mesh_arena_current < mesh_arenas.size() && mesh_arenas[mesh_arena_current].tick == tick) {
+@@ -430,6 +567,14 @@
+ 
+ template <typename Func>
+ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, u32 direct_instances) {
++    // 048: EDEN_TASK_PROBE. The probed draw's dispatches were recorded by the previous draw; copy
++    // its output now, and read a finished copy before staging buffers are handed out again.
++    if (task_probe.read_pending && scheduler.IsFree(task_probe.tick)) {
++        ReadTaskProbe();
++    }
++    if (task_probe.copy_pending) {
++        RecordTaskProbeCopy();
++    }
+ 
+     SCOPE_EXIT {
+         gpu.TickWork();
+@@ -657,6 +802,50 @@
+             ++counted_arena.task_draws;
+             counted_arena.task_groups += groups;
+             counted_arena.block_words += block_bytes / 4;
++            // 048: EDEN_TASK_PROBE. Only the submission's first task draw: its output starts at
++            // arena word 0, so the host knows where to copy from.
++            static u64 next_probe_frame{};
++            static bool want_shadow{true};
++            const auto& probe_regs{maxwell3d->regs};
++            const u64 probe_frame{VideoCommon::NativeDrawTrace::frame.load(std::memory_order_relaxed)};
++            const bool shadow_target{probe_regs.zeta_enable && probe_regs.zeta_size.width >= 1000 &&
++                                     probe_regs.zeta_size.height >= 1000};
++            const bool view_target{probe_regs.rt[0].width == 1440 ||
++                                   (probe_regs.zeta_enable && probe_regs.zeta_size.width == 1440)};
++            const MeshEmulationSetup* const probe_setup{pipeline->MeshEmulation()};
++            if (counted_arena.task_draws == 1 && !task_probe.copy_pending && !task_probe.read_pending &&
++                probe_frame >= next_probe_frame && probe_setup && probe_setup->block_words != 0 &&
++                (want_shadow ? shadow_target : view_target)) {
++                next_probe_frame = probe_frame + 30;
++                want_shadow = !want_shadow;
++                const auto& vp{probe_regs.viewport_transform[0]};
++                task_probe.arena = *arena.buffer;
++                task_probe.args_source = args.buffer;
++                task_probe.args_offset = args.offset;
++                task_probe.output_bytes = (std::min)(bytes, u64{4} << 20);
++                task_probe.tasks = groups;
++                task_probe.block_words = probe_setup->block_words;
++                task_probe.vertex_lines = probe_setup->vertex_lines;
++                task_probe.max_vertices = probe_setup->max_vertices;
++                task_probe.max_primitives = probe_setup->max_primitives;
++                task_probe.position_lines = probe_setup->position_lines;
++                task_probe.shadow = shadow_target;
++                task_probe.target = fmt::format(
++                    "zeta={:#x} {}x{} on={} rt0={:#x} {}x{} vp0=[scale {} {} {} translate {} {} {}] "
++                    "depth_test={} depth_write={} func={} block_words={} max_vertices={} max_primitives={} "
++                    "position_lines={},{},{},{}",
++                    probe_regs.zeta.Address(), probe_regs.zeta_size.width, probe_regs.zeta_size.height,
++                    probe_regs.zeta_enable ? 1 : 0, probe_regs.rt[0].Address(), probe_regs.rt[0].width,
++                    probe_regs.rt[0].height, vp.scale_x, vp.scale_y, vp.scale_z, vp.translate_x,
++                    vp.translate_y, vp.translate_z, probe_regs.depth_test_enable ? 1 : 0,
++                    probe_regs.depth_write_enabled ? 1 : 0, static_cast<u32>(probe_regs.depth_test_func),
++                    probe_setup->block_words, probe_setup->max_vertices, probe_setup->max_primitives,
++                    static_cast<s32>(probe_setup->position_lines[0]),
++                    static_cast<s32>(probe_setup->position_lines[1]),
++                    static_cast<s32>(probe_setup->position_lines[2]),
++                    static_cast<s32>(probe_setup->position_lines[3]));
++                task_probe.copy_pending = true;
++            }
+             mesh_emulation_indirect = {args.buffer, args.offset};
+         }
+         mesh_emulation_groups = groups;
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -7,6 +7,7 @@
+ #pragma once
+ 
+ #include <array>
++#include <string>
+ #include <memory>
+ #include <unordered_map>
+ 
+@@ -272,6 +273,29 @@
+     u64 mesh_arena_size{64ULL << 20};
+     /// The current submission's arena, after its counter is reset.
+     const MeshArena& AcquireMeshArena();
++    /// 048: EDEN_TASK_PROBE, one emulated task draw's arguments and output read back.
++    struct TaskProbe {
++        VkBuffer arena{};
++        VkBuffer args_source{};
++        u64 args_offset{};
++        StagingBufferRef args_copy{};
++        StagingBufferRef output_copy{};
++        u64 output_bytes{};
++        u64 tick{};
++        u32 tasks{};
++        u32 block_words{};
++        u32 vertex_lines{};
++        u32 max_vertices{};
++        u32 max_primitives{};
++        std::array<u32, 4> position_lines{};
++        std::string target;
++        u32 number{};
++        bool shadow{};
++        bool copy_pending{};
++        bool read_pending{};
++    } task_probe;
++    void RecordTaskProbeCopy();
++    void ReadTaskProbe();
+ };
+ 
+ } // namespace Vulkan

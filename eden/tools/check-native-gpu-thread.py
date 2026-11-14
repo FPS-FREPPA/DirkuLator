@@ -221,5 +221,5 @@ with tempfile.TemporaryDirectory(prefix='eden-gpu-thread-') as folder:
                     '-o', str(temp / 'check')], check=True)
     subprocess.run([str(temp / 'check')], check=True, timeout=15)
     failed = subprocess.run([str(temp / 'check'), 'throw'], capture_output=True, text=True, timeout=15)
-    assert failed.returncode != 0 and '[ProsperoEden] GPU worker: injected worker failure' in failed.stderr
+    assert failed.returncode != 0 and '[DirkuLator] GPU worker: injected worker failure' in failed.stderr
 print('Native GPU stack, stop/wake/join, creation failures and blocked-command teardown ordering/rejection PASS')

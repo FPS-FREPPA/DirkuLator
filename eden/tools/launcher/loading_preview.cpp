@@ -1,4 +1,4 @@
-// ProsperoEden - The game loading screen on a PC: draws loading_scene.glsl to PNG files.
+// DirkuLator - The game loading screen on a PC: draws loading_scene.glsl to PNG files.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 //

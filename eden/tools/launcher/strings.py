@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ProsperoEden - The launcher's translation catalogs: template and checks.
+# DirkuLator - The launcher's translation catalogs: template and checks.
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
 """strings.py extract          write tools/launcher/launcher.pot from the text marked in the code
@@ -135,7 +135,7 @@ NOTES = {
     "Turn on or off": "Button hint: switch the highlighted mod on or off.",
     "Create the folder": "Button hint: make the folder a game's mods go in.",
     "Created {0}. Copy each mod's folder into it.": "{0} is a folder.",
-    "ProsperoEden stopped because of an error. A report was saved to {0}.":
+    "DirkuLator stopped because of an error. A report was saved to {0}.":
         "Shown on the home screen after the app crashed and started again; {0} is a file.",
     "Sandboxed (code {0}): app folder only": "The app can read only its own folder; {0} is a number.",
     "Full filesystem": "The app can read every folder of the console.",
@@ -288,9 +288,9 @@ def parse_po(path):
 
 
 def write_catalog(path, texts, translations, language):
-    lines = [f"# ProsperoEden launcher - {language}",
+    lines = [f"# DirkuLator launcher - {language}",
              "# English text is the key (msgid); msgstr is the translation. Keep {0} {1} as they are,",
-             "# keep UPPERCASE labels uppercase, and keep names (ProsperoEden, Eden, PS5, Vulkan, OpenGL,",
+             "# keep UPPERCASE labels uppercase, and keep names (DirkuLator, Eden, PS5, Vulkan, OpenGL,",
              "# AMD FSR, DLC, NSP, XCI, prod.keys, Ryujinx) unchanged.",
              ""]
     for text in sorted(texts, key=str.lower):

@@ -1,0 +1,75 @@
+DirkuLator 0.5.3 (diagnostic part; rendering unchanged): EDEN_WATCHED_TARGET_DRAW adds depth test/function, blend on rt0,
+topology, rt0 and the vertex stage's storage buffers/textures/texture buffers; EDEN_TASK_PAYLOAD adds same_submission.
+The memory change of 0.5.3 (headless/staging_buffers.h: exact staging sizes above 4 MiB) is not in this layer.
+
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -1022,9 +1022,15 @@
+             }
+             VideoCommon::NativeDrawTrace::DepthLog(fmt::format(
+                 "EDEN_WATCHED_TARGET_DRAW zeta={:#x} vs={:016x} ps={:016x} draws={} ps_textures={} handle_zero={} null_views={} "
+-                "alpha_test={} depth_write={}",
++                "alpha_test={} depth_write={} depth_test={} func={} blend0={} topology={} rt0={:#x} "
++                "vs_ssbos={} vs_textures={} vs_texture_buffers={}",
+                 regs.zeta.Address(), vs_key, ps_key, seen, elements, handle_zero, null_views,
+-                regs.alpha_test_enabled, regs.depth_write_enabled));
++                regs.alpha_test_enabled, regs.depth_write_enabled, regs.depth_test_enable,
++                static_cast<u32>(regs.depth_test_func), regs.blend.enable[0],
++                static_cast<u32>(key.state.topology.Value()), regs.rt[0].Address(),
++                Spec::enabled_stages[0] ? stage_infos[0].storage_buffers_descriptors.size() : 0,
++                Spec::enabled_stages[0] ? Shader::NumDescriptors(stage_infos[0].texture_descriptors) : 0,
++                Spec::enabled_stages[0] ? Shader::NumDescriptors(stage_infos[0].texture_buffer_descriptors) : 0));
+         }
+     }
+     // 0.2 (diagnostic): constant buffers of the captured frame. While a capture is armed, the first draw of
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -227,6 +227,7 @@
+ 
+ void RasterizerVulkan::RecordTaskProbeCopy() {
+     task_probe.copy_pending = false;
++    task_probe.same_submission = scheduler.CurrentTick() == task_probe.arm_tick;
+     constexpr u64 args_bytes{Shader::Backend::SPIRV::MESH_EMULATION_ARGS_WORDS * 4};
+     task_probe.args_copy = staging_pool.Request(args_bytes, MemoryUsage::Download);
+     task_probe.output_copy = staging_pool.Request(task_probe.output_bytes, MemoryUsage::Download);
+@@ -421,8 +422,8 @@
+             }
+         }
+     }
+-    const std::string payload_line{fmt::format("EDEN_TASK_PAYLOAD n={} stride={} count_sum={} dispatched={}{}\n",
+-                                               task_probe.number, probe.payload_stride, count_sum,
++    const std::string payload_line{fmt::format("EDEN_TASK_PAYLOAD n={} same_submission={} stride={} count_sum={} dispatched={}{}\n",
++                                               task_probe.number, probe.same_submission ? 1 : 0, probe.payload_stride, count_sum,
+                                                dispatched, payload)};
+     std::fputs(payload_line.c_str(), stderr);
+     std::fputs(line.c_str(), stderr);
+@@ -954,6 +955,7 @@
+                         " {}={:#x}", stage,
+                         (static_cast<u64>(config.reserved[0] & 0xff) << 32) | config.reserved[1]);
+                 }
++                task_probe.arm_tick = scheduler.CurrentTick();
+                 task_probe.copy_pending = true;
+             }
+             mesh_emulation_indirect = {args.buffer, args.offset};
+@@ -1003,6 +1005,7 @@
+                         " {}={:#x}", stage,
+                         (static_cast<u64>(config.reserved[0] & 0xff) << 32) | config.reserved[1]);
+                 }
++                task_probe.arm_tick = scheduler.CurrentTick();
+                 task_probe.copy_pending = true;
+             }
+         }
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -299,6 +299,8 @@
+         // task program (0 with one: the count comes from its args), and the kind printed.
+         u64 arena_offset{};
+         u32 host_groups{};
++        u64 arm_tick{};          ///< 0.5.3: the submission that drew
++        bool same_submission{};  ///< 0.5.3: the copy was recorded in it
+         const char* kind{"view"};
+         // 0.5: the task payload buffer (per task workgroup: payload_stride words, count at word 1).
+         VkBuffer payload_source{};

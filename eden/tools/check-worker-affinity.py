@@ -67,7 +67,8 @@ int main(){
  CheckWorkerTopology();assert(worker_topology_ready && (worker_cpus==std::array<unsigned,7>{0,1,2,3,4,5,6}));assert(secondary_cpus==0x1f80);
  reset(0x5554);CheckWorkerTopology();assert(worker_topology_ready && secondary_cpus==0); // seven allowed primaries, no auxiliary CPU
  reset(0xfff);CheckWorkerTopology();assert(!worker_topology_ready && current==allowed_mask && secondary_cpus==0);
- reset();for(auto&apic:mock_apics)apic=5;CheckWorkerTopology();assert(!worker_topology_ready && current==allowed_mask);
+ reset();for(auto&apic:mock_apics)apic=5;CheckWorkerTopology();assert(worker_topology_ready && current==allowed_mask); // one APIC ID everywhere: the console's fixed layout
+ setenv("EDEN_NX2_NO_CPU_PIN","1",1);reset();for(auto&apic:mock_apics)apic=5;CheckWorkerTopology();assert(!worker_topology_ready && current==allowed_mask);unsetenv("EDEN_NX2_NO_CPU_PIN");
  reset();level_type=0;CheckWorkerTopology();assert(!worker_topology_ready && current==allowed_mask);
  reset();max_leaf=0;CheckWorkerTopology();assert(!worker_topology_ready && sets==0);
  reset();fail_mask=4;CheckWorkerTopology();assert(!worker_topology_ready && current==allowed_mask);

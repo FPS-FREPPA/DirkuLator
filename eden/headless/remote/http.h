@@ -1,5 +1,5 @@
 /*
- * ProsperoEden - HTTP for the backends (backends.h) that are web servers: one request at a
+ * DirkuLator - HTTP for the backends (backends.h) that are web servers: one request at a
  * time (a GET, or a POST/PUT with a JSON body or a file), its answer to memory or to a file.
  * Copyright (C) 2026 BlackBearReloaded
  * SPDX-License-Identifier: GPL-3.0-or-later

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ProsperoEden - Check the launcher's text direction code against ICU (needs libicu-dev).
+# DirkuLator - Check the launcher's text direction code against ICU (needs libicu-dev).
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
 #

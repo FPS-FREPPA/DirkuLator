@@ -1,4 +1,4 @@
-// ProsperoEden: one page lookup for nearby A64 accesses (headless/dynarmic/page-reuse.cmake).
+// DirkuLator: one page lookup for nearby A64 accesses (headless/dynarmic/page-reuse.cmake).
 // Accesses whose addresses are one IR value plus constants, within 256 bytes and with no
 // exclusive, ordered or exception-raising operation between them, share an A64EdenPageLookup:
 // the JIT direct table's value for that page, or 0 when the group does not fit one page or the

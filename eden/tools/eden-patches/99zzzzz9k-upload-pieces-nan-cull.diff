@@ -1,0 +1,298 @@
+DirkuLator 0.5.13: whole-image uploads (RefreshContents' last path, async decode placeholder and result) in staging
+pieces of at most 16 MiB (0.5.12 ended at 1070 s: 48 MiB upload, 40 MiB largest block); the mesh emulation draw drops
+a primitive with a NaN corner whole, as NVIDIA's rasterizer does (vertex explosions); EDEN_HOST_CPU printed by the
+first BlockOfCode; translator salt 0x...15.
+
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/block_of_code.cpp b/src/dynarmic/src/dynarmic/backend/x64/block_of_code.cpp
+--- a/src/dynarmic/src/dynarmic/backend/x64/block_of_code.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/block_of_code.cpp
+@@ -77,6 +77,10 @@
+ }
+ #endif
+ 
++// 0.5.13: EDEN_HOST_CPU is written here during static initialisation (before stderr goes to the
++// log) and printed by the first BlockOfCode.
++static char host_cpu_line[768]{};
++
+ static const HostFeature features = []() {
+     HostFeature f{};
+ #ifdef DYNARMIC_ENABLE_CPU_FEATURE_DETECTION
+@@ -129,7 +133,7 @@
+         cpu_info.getCpuid(1, leaf1.data());
+         cpu_info.getCpuidEx(7, 0, leaf7.data());
+         cpu_info.getCpuid(0x80000001, ext1.data());
+-        std::fprintf(stderr,
++        std::snprintf(host_cpu_line, sizeof(host_cpu_line),
+                      "EDEN_HOST_CPU features=%#llx ssse3=%d sse41=%d sse42=%d avx=%d avx2=%d fma=%d f16c=%d "
+                      "popcnt=%d lzcnt=%d bmi1=%d bmi2=%d fast_bmi2=%d aes=%d pclmul=%d sha=%d avx512f=%d "
+                      "cpuid1 eax=%#x ecx=%#x edx=%#x cpuid7 ebx=%#x ecx=%#x ext1 ecx=%#x\n",
+@@ -181,6 +185,8 @@
+     EnableWriting();
+     EnsureMemoryCommitted(PRELUDE_COMMIT_SIZE);
+     GenRunCode(rcp);
++    static const bool host_cpu_reported = (std::fputs(host_cpu_line, stderr), true);
++    (void)host_cpu_reported;
+ }
+ 
+ bool BlockOfCode::HasHostFeature(HostFeature feature) const noexcept {
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
+@@ -559,6 +559,29 @@
+                                   constant((std::max)(mesh.max_vertices, 1U) - 1))};
+     const Id vertex_base{
+         module.OpIAdd(u32_type, block, module.OpIMul(u32_type, vertex, constant(vertex_lines)))};
++    // 0.5.13: NVIDIA's rasterizer drops a triangle with a NaN vertex position; RADV draws it
++    // across the screen. Unwritten vertex slots start as NaN (EmitMeshPrologue) and OoT's mesh
++    // programs point culled primitives at one. Every corner checks all three of its primitive.
++    const Id bool_type{module.TypeBool()};
++    Id any_nan{module.ConstantFalse(bool_type)};
++    for (u32 other = 0; other < 3; ++other) {
++        const Id other_word{module.OpIAdd(
++            u32_type, module.OpIAdd(u32_type, block, constant(mesh.max_vertices * vertex_lines)),
++            module.OpIAdd(u32_type, module.OpIMul(u32_type, primitive, constant(3)), constant(other)))};
++        const Id other_vertex{module.OpUMin(u32_type, load(other_word),
++                                            constant((std::max)(mesh.max_vertices, 1U) - 1))};
++        const Id other_base{module.OpIAdd(
++            u32_type, block, module.OpIMul(u32_type, other_vertex, constant(vertex_lines)))};
++        for (u32 line = 0; line < vertex_lines; ++line) {
++            const IR::Attribute attribute{mesh.vertex_lines[line]};
++            if (attribute < IR::Attribute::PositionX || attribute > IR::Attribute::PositionW) {
++                continue;
++            }
++            const Id value{module.OpBitcast(
++                f32_type, load(module.OpIAdd(u32_type, other_base, constant(line))))};
++            any_nan = module.OpLogicalOr(bool_type, any_nan, module.OpIsNan(bool_type, value));
++        }
++    }
+ 
+     module.OpStore(position, default_vec4);
+     for (const Id generic : generics) {
+@@ -593,6 +616,18 @@
+                                  module.Constant(f32_type, 0.5f))};
+         module.OpStore(module.OpAccessChain(output_f32, position, constant(2)), z);
+     }
++    // 0.5.13: all three corners of a primitive with a NaN corner at one point outside the clip
++    // volume, so it is dropped whole.
++    const Id culled_label{module.OpLabel()};
++    const Id merge_label{module.OpLabel()};
++    module.OpSelectionMerge(merge_label, spv::SelectionControlMask::MaskNone);
++    module.OpBranchConditional(any_nan, culled_label, merge_label);
++    module.AddLabel(culled_label);
++    const Id two_f{module.Constant(f32_type, 2.0f)};
++    const std::array<Id, 4> culled_components{two_f, two_f, two_f, one_f};
++    module.OpStore(position, module.ConstantComposite(vec4_type, culled_components));
++    module.OpBranch(merge_label);
++    module.AddLabel(merge_label);
+     module.OpReturn();
+     module.OpFunctionEnd();
+     module.AddEntryPoint(spv::ExecutionModel::Vertex, main, "main", interfaces);
+diff --git a/src/shader_recompiler/frontend/ampere/native.h b/src/shader_recompiler/frontend/ampere/native.h
+--- a/src/shader_recompiler/frontend/ampere/native.h
++++ b/src/shader_recompiler/frontend/ampere/native.h
+@@ -43,7 +43,7 @@
+ 
+ // Salt mixed into the pipeline cache identity of native-translated programs. Bump it whenever the
+ // native translation changes so cached results of an older translator are never reused.
+-inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a00014ULL;
++inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a00015ULL;
+ 
+ // Maxwell Location offset of native instruction `index` (same mapping the lowering uses).
+ [[nodiscard]] constexpr u32 LocationOf(u32 index) {
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -2141,7 +2141,7 @@
+     uploaded_bytes += image.guest_size_bytes;
+     largest_upload = (std::max<u64>)(largest_upload, image.guest_size_bytes);
+     const auto upload_start = std::chrono::steady_clock::now();
+-    if (!UploadConvertedInChunks(image) && !UploadInChunks(image)) {
++    if (!UploadConvertedInChunks(image) && !UploadInChunks(image) && !UploadWholeInPieces(image)) {
+         auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
+         UploadImageContents(image, staging);
+         runtime.InsertUploadMemoryBarrier();
+@@ -2545,9 +2545,8 @@
+         image.flags |= ImageFlagBits::ZeroFilled;
+         auto zero_copies = copies;
+         ConvertedLayout(image.info, zero_copies);
+-        auto staging = runtime.UploadStagingBuffer(out_size);
+-        std::memset(staging.mapped_span.data(), 0, out_size);
+-        image.UploadMemory(staging, zero_copies);
++        UploadInPieces(image, std::span<const BufferImageCopy>(zero_copies.data(), zero_copies.size()), out_size,
++                       [](std::span<u8> out, u64) { std::memset(out.data(), 0, out.size()); });
+         runtime.InsertUploadMemoryBarrier();
+     }
+ 
+@@ -2641,10 +2640,12 @@
+             i = async_decodes.erase(i);
+             continue;
+         }
+-        auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
+-        std::memcpy(staging.mapped_span.data(), async_decode->decoded_data.data(),
+-                    async_decode->decoded_data.size());
+-        image.UploadMemory(staging, FixSmallVectorADL(async_decode->copies));
++        const auto& decoded = async_decode->decoded_data;
++        UploadInPieces(image,
++                       std::span<const BufferImageCopy>(async_decode->copies.data(), async_decode->copies.size()),
++                       decoded.size(), [&decoded](std::span<u8> out, u64 at) {
++                           std::memcpy(out.data(), decoded.data() + at, out.size());
++                       });
+         image.flags &= ~ImageFlagBits::IsDecoding;
+         has_uploads = true;
+         i = async_decodes.erase(i);
+@@ -3882,12 +3883,136 @@
+ }
+ 
+ template <class P>
++template <typename Fill>
++void TextureCache<P>::UploadInPieces(Image& image, std::span<const BufferImageCopy> copies, u64 total,
++                                     Fill&& fill) {
++    // 0.5.13: a whole image needs one staging block of its size. After Saria's wave the pool had
++    // none of 48 MiB (0.5.12 ended at 1070 s with blocks of at most 40 MiB). The same copies go in
++    // staging buffers of at most 16 MiB: whole copies together, a larger copy by layer or slice.
++    constexpr u64 piece_size = 16_MiB;
++    struct Unit {
++        BufferImageCopy copy;
++        u64 source;
++        u64 size;
++    };
++    std::vector<Unit> units;
++    units.reserve(copies.size());
++    for (size_t index = 0; index < copies.size(); ++index) {
++        const BufferImageCopy& copy = copies[index];
++        const u64 end = index + 1 < copies.size() ? copies[index + 1].buffer_offset : total;
++        const u64 size = end > copy.buffer_offset ? end - copy.buffer_offset : 0;
++        const u32 layers = static_cast<u32>((std::max)(copy.image_subresource.num_layers, 1));
++        const u32 depth = (std::max)(copy.image_extent.depth, 1U);
++        const u32 slices = size <= piece_size ? 1U : layers > 1 ? layers : depth;
++        if (slices > 1 && size % slices == 0) {
++            const u64 slice_size = size / slices;
++            for (u32 slice = 0; slice < slices; ++slice) {
++                BufferImageCopy part = copy;
++                part.buffer_offset = copy.buffer_offset + slice * slice_size;
++                part.buffer_size = slice_size;
++                if (layers > 1) {
++                    part.image_subresource.base_layer += static_cast<s32>(slice);
++                    part.image_subresource.num_layers = 1;
++                } else {
++                    part.image_offset.z += static_cast<s32>(slice);
++                    part.image_extent.depth = 1;
++                }
++                units.push_back({part, part.buffer_offset, slice_size});
++            }
++        } else {
++            BufferImageCopy part = copy;
++            part.buffer_size = size;
++            units.push_back({part, copy.buffer_offset, size});
++        }
++    }
++    std::vector<BufferImageCopy> piece_copies;
++    for (size_t first = 0; first < units.size();) {
++        u64 bytes = units[first].size;
++        size_t last = first + 1;
++        while (last < units.size() && bytes + units[last].size <= piece_size) {
++            bytes += units[last++].size;
++        }
++        if (bytes > piece_size) {
++            static u32 logged{};
++            if (logged++ < 32) {
++                LOG_WARNING(HW_GPU, "EDEN_BIG_UPLOAD_PIECE bytes={} gpu={:#x} format={} {}x{}x{} levels={} layers={} flags={:#x}",
++                            bytes, image.gpu_addr, static_cast<u32>(image.info.format), image.info.size.width,
++                            image.info.size.height, image.info.size.depth, image.info.resources.levels,
++                            image.info.resources.layers, static_cast<u32>(image.flags));
++            }
++        }
++        if (bytes == 0) {
++            first = last;
++            continue;
++        }
++        auto staging = runtime.UploadStagingBuffer(bytes);
++        piece_copies.clear();
++        u64 at = 0;
++        for (size_t unit = first; unit < last; ++unit) {
++            fill(std::span<u8>{staging.mapped_span}.subspan(at, units[unit].size), units[unit].source);
++            BufferImageCopy copy = units[unit].copy;
++            copy.buffer_offset = at;
++            piece_copies.push_back(copy);
++            at += units[unit].size;
++        }
++        image.UploadMemory(staging, piece_copies);
++        first = last;
++    }
++}
++
++template <class P>
++bool TextureCache<P>::UploadWholeInPieces(Image& image) {
++    constexpr ImageFlagBits excluded = ImageFlagBits::Sparse | ImageFlagBits::AcceleratedUpload |
++                                       ImageFlagBits::Unbacked | ImageFlagBits::TrimmedLevels;
++    const u64 total = MapSizeBytes(image);
++    if (total <= 16_MiB) {
++        return false;
++    }
++    if (True(image.flags & excluded)) {
++        static u32 logged{};
++        if (logged++ < 32) {
++            LOG_WARNING(HW_GPU, "EDEN_BIG_UPLOAD_WHOLE bytes={} gpu={:#x} format={} {}x{}x{} levels={} layers={} flags={:#x}",
++                        total, image.gpu_addr, static_cast<u32>(image.info.format), image.info.size.width,
++                        image.info.size.height, image.info.size.depth, image.info.resources.levels,
++                        image.info.resources.layers, static_cast<u32>(image.flags));
++        }
++        return false;
++    }
++    if (True(image.flags & ImageFlagBits::Converted)) {
++        unswizzle_data_buffer.resize_destructive(image.unswizzled_size_bytes);
++        auto copies = FixSmallVectorADL(UnswizzleImage(*gpu_memory, image.gpu_addr, image.info, {},
++                                                       unswizzle_data_buffer, &swizzle_data_buffer));
++        std::vector<u8> converted;
++        try {
++            converted.resize(total);
++        } catch (const std::bad_alloc&) {
++            return false; // one staging buffer after all
++        }
++        ConvertImage(unswizzle_data_buffer, image.info, converted, copies);
++        UploadInPieces(image, std::span<const BufferImageCopy>(copies.data(), copies.size()), total,
++                       [&converted](std::span<u8> out, u64 at) {
++                           std::memcpy(out.data(), converted.data() + at, out.size());
++                       });
++    } else {
++        unswizzle_data_buffer.resize_destructive(total);
++        const auto copies = FixSmallVectorADL(UnswizzleImage(*gpu_memory, image.gpu_addr, image.info, {},
++                                                             unswizzle_data_buffer, &swizzle_data_buffer));
++        UploadInPieces(image, std::span<const BufferImageCopy>(copies.data(), copies.size()), total,
++                       [this](std::span<u8> out, u64 at) {
++                           std::memcpy(out.data(), unswizzle_data_buffer.data() + at, out.size());
++                       });
++    }
++    runtime.InsertUploadMemoryBarrier();
++    return true;
++}
++
++template <class P>
+ bool TextureCache<P>::UploadConvertedInChunks(Image& image) {
+     // A converted image (ASTC kept as BC1/BC3) was staged whole: a 1434x1434 array of 46 layers
+     // asked for 121 MiB in one block and the console refused it, with blocks of 80 MiB free
+     // (issue #20). ConvertImage treats layers independently, so groups of layers of at most
+     // 32 MiB are converted into their own staging buffer and uploaded in turn: same bytes.
+-    constexpr u64 chunk_size = 32_MiB;
++    constexpr u64 chunk_size = 16_MiB; // 0.5.13: was 32 MiB
+     constexpr ImageFlagBits excluded = ImageFlagBits::Sparse | ImageFlagBits::AcceleratedUpload |
+                                        ImageFlagBits::Unbacked | ImageFlagBits::TrimmedLevels;
+     const u32 layers = static_cast<u32>(image.info.resources.layers);
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -463,6 +463,14 @@
+     /// not qualify.
+     bool UploadConvertedInChunks(Image& image);
+ 
++    /// 0.5.13: uploads `copies` (laid out by their buffer offsets in `total` bytes, written by
++    /// fill(span, source offset)) in staging buffers of at most 16 MiB.
++    template <typename Fill>
++    void UploadInPieces(Image& image, std::span<const BufferImageCopy> copies, u64 total, Fill&& fill);
++
++    /// 0.5.13: a whole image that neither chunk path takes, uploaded with UploadInPieces.
++    bool UploadWholeInPieces(Image& image);
++
+     /// Records a GPU remap of a small part of a large 2D image for a partial re-upload instead of
+     /// marking the whole image remapped (which replaces it). False if the image does not qualify.
+     bool MarkPartialRemap(ImageBase& image, GPUVAddr gpu_addr, size_t size);

@@ -1,4 +1,4 @@
-// ProsperoEden - Direction of text: which way each character of a line is drawn.
+// DirkuLator - Direction of text: which way each character of a line is drawn.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

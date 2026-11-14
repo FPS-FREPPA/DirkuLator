@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Build and verify the pinned upstream Lapy helper for ProsperoEden."""
+"""Build and verify the pinned upstream Lapy helper for DirkuLator."""
 
 import hashlib
 import json

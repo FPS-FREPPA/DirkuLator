@@ -1,4 +1,4 @@
-// ProsperoEden - The launcher's text: a baked SDF font, the console's fonts for other scripts.
+// DirkuLator - The launcher's text: a baked SDF font, the console's fonts for other scripts.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

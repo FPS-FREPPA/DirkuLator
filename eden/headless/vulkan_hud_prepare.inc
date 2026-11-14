@@ -1,4 +1,7 @@
     const auto hud = hud_memory ? Eden::GetVulkanHud() : Eden::HudSnapshot{};
+    // DirkuLator 0.5.20: the graphs under the line (hud.h, MakeHudGraphs); all empty without them.
+    const auto hud_graphs = hud_memory ? Eden::GetVulkanHudGraphs()
+                                       : std::array<Eden::HudSnapshot, Eden::Hud::kGraphCount>{};
     if (hud.width && !hud_pipeline) {
         // The loading screen's picture (loading_art.h): the game's cover and its blurred copy, or
         // one clear texel for a game without a cover. The overlay shares the pipeline and does

@@ -1,6 +1,6 @@
 # Changelog
 
-What changed in each release of ProsperoEden, newest first. A release's notes on GitHub are its section here.
+What changed in each release of DirkuLator, newest first. A release's notes on GitHub are its section here.
 
 ## v1.005.000
 
@@ -8,7 +8,7 @@ This alpha keeps each game in a folder of its own with everything that belongs t
 
 ### New and improved
 
-- **One folder per game.** A game can sit in a folder of its own in `roms/`, together with its update and DLC files, its mods (`mods/`), its cheats (`cheats/`) and its own post-processing presets (`reshade/`). ProsperoEden tells the game from its update and DLC by what each file holds, so the files can have any names. **Delete from console** removes the folder's update and DLC too. Games downloaded from a source now go into a folder of their own the same way. Your files stay where they are and keep working. See [Game files folder](https://github.com/blackbearreloaded/ProsperoEden/blob/main/docs/INSTALL.md#game-files-folder).
+- **One folder per game.** A game can sit in a folder of its own in `roms/`, together with its update and DLC files, its mods (`mods/`), its cheats (`cheats/`) and its own post-processing presets (`reshade/`). DirkuLator tells the game from its update and DLC by what each file holds, so the files can have any names. **Delete from console** removes the folder's update and DLC too. Games downloaded from a source now go into a folder of their own the same way. Your files stay where they are and keep working. See [Game files folder](https://github.com/blackbearreloaded/ProsperoEden/blob/main/docs/INSTALL.md#game-files-folder).
 - **Cheats in a list of their own.** A game's settings have a **Cheats** row next to **Mods**: every cheat of the game with its own switch, and an **All cheats** switch apart from the Mods one. **Mods** now lists patches and replacement files only. Cheats you chose before stay on.
 - **A game's own post-processing presets.** Presets and effects in a game folder's `reshade/` are offered in that game's **Post-processing** list, after the shared ones.
 - **Speed limit (new Performance setting).** **Settings > Performance > Speed limit**, and the same row in a game's own settings: 100% (as before), 150%, 200%, 300% or Unlimited. A game locked to 30 FPS can run faster when the console has time to spare; for a game whose logic follows its frame rate, the whole game runs faster.
@@ -50,7 +50,7 @@ This alpha adds post-processing looks and wallpapers of your own, frees more mem
 - **A game's language from its update.** A game whose languages come from a packed update (NSP or XCI) is offered them again, instead of falling back to English.
 - **Crash reports name the allocation that failed** when a game runs out of memory.
 - **Public rooms.** The project's own rooms are listed first, the list scrolls, and L1/R1 move a page at a time.
-- **Launcher packs update themselves.** A custom launcher pack can name an update feed: ProsperoEden checks it, downloads a newer pack after you confirm, verifies its size and SHA-256, and can go back to the previous version. Libraries load faster in packs. See [Runtime launcher packs](https://github.com/blackbearreloaded/ProsperoEden/blob/main/docs/RUNTIME_LAUNCHERS.md).
+- **Launcher packs update themselves.** A custom launcher pack can name an update feed: DirkuLator checks it, downloads a newer pack after you confirm, verifies its size and SHA-256, and can go back to the previous version. Libraries load faster in packs. See [Runtime launcher packs](https://github.com/blackbearreloaded/ProsperoEden/blob/main/docs/RUNTIME_LAUNCHERS.md).
 - **Slate theme polish** and the launcher texts of the new settings in all 30 languages.
 
 ### Thank you
@@ -106,12 +106,12 @@ Back up your saves and settings. The package contains no games, firmware or keys
 ## v1.002.000
 
 - **More free memory for demanding games.** The console's memory is one pool shared by the emulated console, the emulator itself and the graphics, and part of it was held without being used. The emulated console's memory, the code caches and a reserve on the system's side now take memory only when they need it. A large open-world game at 2x has about 3.5 GiB free during play instead of 2.2 GiB, at the same frame rate, so a long session runs out of memory far later.
-- **PS5 Pro memory mode.** On a PS5 Pro, ProsperoEden asks for the larger memory pool the console offers: 13.5 GiB instead of 12 GiB. A line at launch (`memory:` in `stderr.log`) says whether it is active. Contributed by [OverkillLabs](https://github.com/OverkillLabs3).
+- **PS5 Pro memory mode.** On a PS5 Pro, DirkuLator asks for the larger memory pool the console offers: 13.5 GiB instead of 12 GiB. A line at launch (`memory:` in `stderr.log`) says whether it is active. Contributed by [OverkillLabs](https://github.com/OverkillLabs3).
 - **"Ran out of graphics memory" less often above 1x.** The part that frees textures no game is using could stop looking before it had freed anything, so graphics memory filled up although much of it could be freed. Contributed by [mzet97](https://github.com/mzet97).
 - **Vibration strength (new setting).** **Settings > Controls > Vibration strength** sets how strong the DualSense vibrates: 25%, 50%, 75% or 100% of what a game asks for. The controller answers each change with a short vibration at the new strength, so the level is chosen by feel.
 - **A game without your language starts in English.** With a language chosen that a game does not have, the game started in the next language of the console's own order: with Brazilian Portuguese that was Spanish. It now gets the chosen language or a variant of it when it has one, and English otherwise.
 - **The FPS overlay is a small system monitor.** Turned on in **Settings > Video > FPS overlay** (or in a game's own settings), it shows over the game: the graphics backend, the frame rate against the game's own, the frame time, each of the four emulated CPU cores, the GPU's busy time measured by the GPU itself, the memory taken of the pool and the graphics' part of it, for example `VLK 30/60FPS 34.6MS CPU 92% 45% 38% 3% GPU 71% MEM 7.7/12.1G GFX 4.1G`. **Settings > Video > Overlay options** turns each piece on or off, sets its size, position and colours, and with **CPU by core** off shows only the busiest core; a game's settings can give it its own size and position. Contributed by [Bauls Deep](https://github.com/bawsdeep).
-- **Variable refresh rate on older system software.** On system software 6.02 the console did not know the way ProsperoEden declared a variable refresh rate and listed the app without one. It is now declared the way older system software knows.
+- **Variable refresh rate on older system software.** On system software 6.02 the console did not know the way DirkuLator declared a variable refresh rate and listed the app without one. It is now declared the way older system software knows.
 
 **Thanks** to the people whose work is in this release:
 
@@ -121,13 +121,13 @@ Back up your saves and settings. The package contains no games, firmware or keys
 - [Mihawk](https://github.com/mihawk-99), for the measurements of the console's memory pools that the memory work builds on, and for the Vulkan driver all of this runs on.
 - [tonysantosl](https://github.com/tonysantosl), for reporting the language that games fell back to, and [zh522130](https://github.com/zh522130), for asking for a vibration that can be turned down.
 
-And to everyone who tests ProsperoEden on their own console and reports what they find.
+And to everyone who tests DirkuLator on their own console and reports what they find.
 
 ## v1.001.000
 
 - **A new launcher.** The menu was rebuilt. Five sections sit on a rail at the left (Home, Library, Multiplayer, Settings, About): L1 and R1 go from one to the next, and Left from a screen's edge opens the rail. Home is built around the game to continue, with its cover and what it runs with. The Library shows your games as covers, with the chosen game's details beside them. A game's settings are a page of their own, and Settings is a board of tiles.
 - **Themes.** The launcher's look is a theme, chosen in **Settings > Theme**. This version comes with one, Canopy; [docs/THEMES.md](https://github.com/blackbearreloaded/ProsperoEden/blob/main/docs/THEMES.md) says what a theme is made of.
-- **An opening.** ProsperoEden appears out of the console's own launch picture without a cut: its mark comes forward over the picture, then goes to its place as the menu arrives. Any button skips it, and it plays only when the app is started.
+- **An opening.** DirkuLator appears out of the console's own launch picture without a cut: its mark comes forward over the picture, then goes to its place as the menu arrives. Any button skips it, and it plays only when the app is started.
 - **A loading screen with the game's cover.** While a game starts, its cover stands in the middle with a line of light going round it as the start advances, in front of the cover's own colours. Under it are the step the start is at, the shaders built so far, and the seconds a slow step has lasted.
 - **The controller's buttons are drawn.** **Settings > Controls** and the button mapping show Touchpad, L1, R1 and the other buttons as pictures instead of names.
 - **Game settings from the home screen.** The button beside **Play**, and Triangle on the game to continue or on a recent game, open that game's settings.
@@ -152,25 +152,25 @@ And to everyone who tests ProsperoEden on their own console and reports what the
 - [OverkillLabs](https://github.com/OverkillLabs3), for the fix that keeps the fast path for exclusive memory accesses with Faster CPU emulation on.
 - [Mihawk](https://github.com/mihawk-99) and [mpereiraesaa](https://github.com/mpereiraesaa), for the drawing fixes in the OpenGL SDK, and Mihawk for the Vulkan driver all of this runs on.
 
-And to everyone who tests ProsperoEden on their own console and reports what they find.
+And to everyone who tests DirkuLator on their own console and reports what they find.
 
 ## v1.000.110
 
-- **Multiplayer through Eden rooms (new, experimental).** ProsperoEden can join an Eden room, so a game's Local Wireless mode reaches other players over the internet: other PS5 consoles running ProsperoEden, and Eden on a PC. Open **Multiplayer** (a section of the menu: R1 twice from the home screen), join a room, then start the game and choose its Local Wireless mode. The home screen shows when a room is connected, the game overlay shows the delay to the room in milliseconds, and when the connection is lost the game closes and the launcher says why. See the [setup guide](https://github.com/blackbearreloaded/ProsperoEden/blob/main/docs/MULTIPLAYER.md).
+- **Multiplayer through Eden rooms (new, experimental).** DirkuLator can join an Eden room, so a game's Local Wireless mode reaches other players over the internet: other PS5 consoles running DirkuLator, and Eden on a PC. Open **Multiplayer** (a section of the menu: R1 twice from the home screen), join a room, then start the game and choose its Local Wireless mode. The home screen shows when a room is connected, the game overlay shows the delay to the room in milliseconds, and when the connection is lost the game closes and the launcher says why. See the [setup guide](https://github.com/blackbearreloaded/ProsperoEden/blob/main/docs/MULTIPLAYER.md).
 - **Private room.** Enter a room's address, UDP port, a nickname and its password. They are saved as you type them, and joining a public room does not replace them. Enter the room's IPv4 address: looking up a hostname does not work on the console yet.
 - **Public rooms.** A list of the rooms in Eden's public directory, with each room's game, how many players it has and whether it asks for a password. Rooms you can join come first, the busiest at the top; Left and Right move a page at a time and Triangle refreshes. Rooms that use another protocol version are marked and cannot be joined.
 - **For a stable multiplayer session**, everyone needs the same game and the same update of it, and the player who hosts the lobby should use 1x resolution with frame generation off. A host that cannot hold full speed ends the session for everyone.
 - **Connection problems are explained.** When a room cannot be joined, a panel says what happened and what to try: a wrong password, a full room, a room that did not answer, a name already in use. **Settings > Diagnostics** has the detailed log to send with a report.
 - **Self-update keeps the version it replaces.** After an update, the previous version's files stay in `/data/eden-nx2/previous-version/PPSA99862-backup` until the next update. See [Going back to the previous version](INSTALL.md#going-back-to-the-previous-version).
-- **One place for your data.** Settings, saves and covers are only ever in `/data/eden-nx2`. When ProsperoEden could not get access to the console's storage at a start, it used to carry on with empty settings and no saves, which looked as if they had been lost; it now says so on the home screen and starts no game. Keys, firmware and games that an early version kept inside the app's folder are moved to `/data/eden-nx2` at the first start, so that replacing the app cannot remove them.
+- **One place for your data.** Settings, saves and covers are only ever in `/data/eden-nx2`. When DirkuLator could not get access to the console's storage at a start, it used to carry on with empty settings and no saves, which looked as if they had been lost; it now says so on the home screen and starts no game. Keys, firmware and games that an early version kept inside the app's folder are moved to `/data/eden-nx2` at the first start, so that replacing the app cannot remove them.
 - **120 Hz holds on a display with a variable refresh rate.** With **Refresh rate** at 120 Hz, such a display was read as not having switched and the output went back to 60 Hz.
 - **No more lost graphics device in shader-heavy scenes.** Long scenes could stop a game with `VK_ERROR_DEVICE_LOST`; draws are now handed to the GPU in smaller batches. Contributed by [Bauls Deep](https://github.com/bawsdeep).
 - **Eden updated** to its revision of 8 October (`67bada77`), together with the Vulkan driver (Mesa), its tools and the Payload SDK.
-- **The helper that gives ProsperoEden access to storage** no longer reads a title's kernel data after that title has exited during its start.
+- **The helper that gives DirkuLator access to storage** no longer reads a title's kernel data after that title has exited during its start.
 
 ## v1.000.100
 
-- **Frame generation (new).** Between two pictures a game draws, ProsperoEden can show one made up from them, so a 30 FPS game looks like 60. It is in **Settings > Video** and in each game's own settings, works with the Vulkan renderer, and needs your own copy of Lossless Scaling: without its `Lossless.dll` the settings are greyed out. See [Frame generation](SETTINGS.md#frame-generation). Contributed by [gyn7561](https://github.com/gyn7561).
+- **Frame generation (new).** Between two pictures a game draws, DirkuLator can show one made up from them, so a 30 FPS game looks like 60. It is in **Settings > Video** and in each game's own settings, works with the Vulkan renderer, and needs your own copy of Lossless Scaling: without its `Lossless.dll` the settings are greyed out. See [Frame generation](SETTINGS.md#frame-generation). Contributed by [gyn7561](https://github.com/gyn7561).
 - **A new loading screen.** It lists the steps of a game's start (reading the game, starting graphics, building shaders, starting the game) with a progress bar; while shaders are built it counts them. A step that lasts gets its seconds shown, so a start that is stuck can be told from one that is slow.
 - **Cheats in a file of their own work.** A cheat file placed straight in a game's mods folder (`cheat_<name>.txt`) was listed and switched on, but changed nothing in the game. It does now. The session log also names the game's build ID, the name a cheat file for that version of the game has.
 - **A game no longer fails every start after a crash.** A crash, or a console that went down, could leave a game's shader cache file damaged; that game then crashed at every start on the same renderer. The damaged part is now cut off and the rest is kept.
@@ -201,22 +201,22 @@ A bug fix for v1.000.090. If you are on v1.000.090, update.
 
 - **Single Joy-Con games with the DualSense held as usual.** A game that has a single Joy-Con held sideways no longer needs the DualSense turned sideways: the stick, the four buttons and the motion sensors are turned to match, for each player. L1 and R1 stay SL and SR.
 - **What's new in the update dialog.** When an update is offered, **What's new** shows that release's notes before you decide.
-- **Start a game directly.** ProsperoEden takes `--rom <file>` and `--exit-after-game` as launch arguments, so a home screen forwarder can open one game; see [docs/FORWARDER.md](FORWARDER.md).
+- **Start a game directly.** DirkuLator takes `--rom <file>` and `--exit-after-game` as launch arguments, so a home screen forwarder can open one game; see [docs/FORWARDER.md](FORWARDER.md).
 - **Filesystem access on firmware 13.60.** The bundled helper is updated with a fix for that firmware.
 - **Release ZIP opens with the right permissions.** Its files are stored open to all, as the console wants an app's files; unpacked with their permissions kept, they could give "Can't start the game or app" (CE-107750-0).
 
 ## v1.000.070
 
-- **ProsperoEden starts wherever it is installed.** On a USB drive, extended storage, an etaHEN games folder or any other place ShadowMountPlus mounts it from, it could not find its own files and closed after a moment. It now reads its files from where the PS5 mounts the running app.
+- **DirkuLator starts wherever it is installed.** On a USB drive, extended storage, an etaHEN games folder or any other place ShadowMountPlus mounts it from, it could not find its own files and closed after a moment. It now reads its files from where the PS5 mounts the running app.
 - **Updates from the menu work on those installs too.** The update helper updates the folder ShadowMountPlus mounted the app from; an app installed as an image is not changed, and the dialog says to replace the image.
 - **Clearer error when the menu cannot start**, naming the file and the reason.
-- **Start-up trace for bug reports.** Each start-up step is written to the kernel log (`[ProsperoEden diag]`) and to `/data/eden-nx2/logs/boot-trace.txt`.
+- **Start-up trace for bug reports.** Each start-up step is written to the kernel log (`[DirkuLator diag]`) and to `/data/eden-nx2/logs/boot-trace.txt`.
 
 ## v1.000.060
 
-- **Updates from the menu.** When a newer release is listed on homebrew.page, ProsperoEden offers it each time it opens. **Update now** downloads and checks it, unpacks it beside the app, then closes so the update helper can replace its files; **Skip** keeps the current version until the next time it opens. Your saves, settings and own files in the app folder are kept. See [Updating](INSTALL.md#updating).
-- **Lapy elevation included.** ProsperoEden carries its own one-shot helper built from upstream Lapy and sends it over the local ELF loader on port 9021; loading Lapy separately is no longer needed.
-- **The elevation helper no longer crashes when ProsperoEden starts.** Its start-up runs on one thread, and it is built from a corrected upstream release.
+- **Updates from the menu.** When a newer release is listed on homebrew.page, DirkuLator offers it each time it opens. **Update now** downloads and checks it, unpacks it beside the app, then closes so the update helper can replace its files; **Skip** keeps the current version until the next time it opens. Your saves, settings and own files in the app folder are kept. See [Updating](INSTALL.md#updating).
+- **Lapy elevation included.** DirkuLator carries its own one-shot helper built from upstream Lapy and sends it over the local ELF loader on port 9021; loading Lapy separately is no longer needed.
+- **The elevation helper no longer crashes when DirkuLator starts.** Its start-up runs on one thread, and it is built from a corrected upstream release.
 
 ## v1.000.050
 
@@ -226,8 +226,8 @@ A bug fix for v1.000.090. If you are on v1.000.090, update.
 - **Performance settings.** **Settings > Performance** has seven switches that trade accuracy for speed, for every game or for one. See [Performance settings](SETTINGS.md#performance-settings).
 - **Cheats chosen one by one.** A mod that lists several cheats shows each under it with its own switch, and only the chosen ones run. See [Mods](MODS.md#mods).
 - **Update notice.** When a newer release is listed on homebrew.page, the menu says so at the top right for ten seconds. Nothing is downloaded or installed. See [Updating](INSTALL.md#updating).
-- **Leaving a game takes ten seconds at most.** If a game has not stopped ten seconds after Touchpad + L1, or after it ended by itself, ProsperoEden starts again and opens at the menu. Some games took minutes to close.
-- **Touchpad + L1 works while a game loads.** A load that hangs can be left; before, the only way out was closing ProsperoEden.
+- **Leaving a game takes ten seconds at most.** If a game has not stopped ten seconds after Touchpad + L1, or after it ended by itself, DirkuLator starts again and opens at the menu. Some games took minutes to close.
+- **Touchpad + L1 works while a game loads.** A load that hangs can be left; before, the only way out was closing DirkuLator.
 - **A game's controller screen always gets an answer.** A game that takes only the handheld controller gets it in Docked mode too, and a game that names no controller gets a Pro Controller. Both used to leave the game waiting.
 - **Removed games leave the menu.** A game whose file leaves the game files folder leaves Continue Playing, Recently Played and the Library within two seconds, and is not started.
 - **Touchpad by its name.** The menu and this document say Touchpad + L1 and Touchpad + R1.
@@ -246,18 +246,18 @@ A bug fix for v1.000.090. If you are on v1.000.090, update.
 - **Touchpad as Minus in games.** A tap of the touchpad presses the game's Minus button, and a longer press holds it. The Touchpad + L1 and Touchpad + R1 shortcuts never reach the game as a press.
 - **A crash a few seconds into some games is fixed.** The motion sensors' updates could reach a part of the controller service that was not set up yet.
 - **Games' own system screens.** A game's error dialog, profile picker and similar screens use Eden's built-in versions, and its error dialog now answers the game instead of leaving it waiting. The firmware's versions could end a session with an out-of-memory error.
-- **More graphics memory.** The PS5 gives an app one pool of memory that the CPU and the GPU share, and ProsperoEden held about 3 GiB of it without using it: its heap took 3 GiB at start and the emulated console's page table 1 GiB. Both now take memory as they need it, which gives graphics about 2.6 GiB more in the largest game tested. That game ran out of graphics memory while loading at 2x; it now runs at 2x with the AMD FSR filter at a steady 30 FPS, with about 2 GiB to spare. The texture cache also measures its memory use from what is really left of the pool, instead of a driver figure that counted every allocation twice.
+- **More graphics memory.** The PS5 gives an app one pool of memory that the CPU and the GPU share, and DirkuLator held about 3 GiB of it without using it: its heap took 3 GiB at start and the emulated console's page table 1 GiB. Both now take memory as they need it, which gives graphics about 2.6 GiB more in the largest game tested. That game ran out of graphics memory while loading at 2x; it now runs at 2x with the AMD FSR filter at a steady 30 FPS, with about 2 GiB to spare. The texture cache also measures its memory use from what is really left of the pool, instead of a driver figure that counted every allocation twice.
 - **A clearer message when a game runs out of graphics memory.** If a game still needs more than there is at a high resolution, give it its own lower one: Triangle on it in the Library, then **Resolution**.
 - **Games that accept only single Joy-Cons** now get one, and L1 and R1 are its SL and SR buttons, which those games ask for on their controller screen.
 - **Mods.** A game's patches, replacement files and cheats load from `mods/<title ID>/` next to `roms/`, and the game's settings list them with a switch each. `.ips` and text `.pchtxt` patches, which the emulator core could not apply, now work. The Library has one switch per game for all of its mods. See [Mods](MODS.md#mods).
 - **120 Hz output.** **Refresh rate** in **Settings > Video**, and in each game's settings, asks the display for 120 Hz while a game runs. A display that cannot show it stays at 60 Hz, and the menu always runs at 60 Hz. After a game at 120 Hz the menu takes about five seconds to come back while the display changes rate.
-- **Output resolution.** **Settings > Video** has a new **Output resolution** row: 1080p (as before), 1440p or 2160p. It is the size of the picture ProsperoEden puts out, for the menu and for games. Until now a game's picture was made at 1080p and enlarged, whatever its internal resolution; at 2160p the upscaling filter scales the game straight to a 4K picture. A larger picture needs more graphics memory.
+- **Output resolution.** **Settings > Video** has a new **Output resolution** row: 1080p (as before), 1440p or 2160p. It is the size of the picture DirkuLator puts out, for the menu and for games. Until now a game's picture was made at 1080p and enlarged, whatever its internal resolution; at 2160p the upscaling filter scales the game straight to a 4K picture. A larger picture needs more graphics memory.
 - **3x and 4x resolution.** The internal resolution now goes up to 4x. These need far more graphics memory than 2x; a game that runs out says so, and can be given its own lower resolution.
 - **Patches for more frames than the display shows.** A game patched to run faster than the output refreshes keeps its pace: the frames the display has no refresh for are left out.
-- **Crash reports.** If ProsperoEden stops because of an error, it writes `crash-<date>-<time>.txt` to `/data/eden-nx2/logs`, starts again and says on the home screen where the report is. That session's logs are kept beside it, and the five newest reports stay. A report holds what failed, where in the app's code, and what was running; it never holds the contents of memory.
+- **Crash reports.** If DirkuLator stops because of an error, it writes `crash-<date>-<time>.txt` to `/data/eden-nx2/logs`, starts again and says on the home screen where the report is. That session's logs are kept beside it, and the five newest reports stay. A report holds what failed, where in the app's code, and what was running; it never holds the contents of memory.
 - The launcher and the OpenGL renderer use the PS5 OpenGL 4.6 SDK 1.0.0.
 - The graphics driver's shader cache moved to `/data/eden-nx2/cache`, so a read-only package install keeps it.
-- **Experimental: block list.** With an empty file named `block-list.txt` in `/data/homebrew/PPSA99862`, ProsperoEden saves which code a 64-bit game compiled and compiles it again on a spare CPU when the game next starts. In a repeat session of a large open-world game, the emulated cores then compiled 426 blocks during play instead of 138,262, and gameplay started at 30 FPS instead of 22. It is off by default until more games have run with it.
+- **Experimental: block list.** With an empty file named `block-list.txt` in `/data/homebrew/PPSA99862`, DirkuLator saves which code a 64-bit game compiled and compiles it again on a spare CPU when the game next starts. In a repeat session of a large open-world game, the emulated cores then compiled 426 blocks during play instead of 138,262, and gameplay started at 30 FPS instead of 22. It is off by default until more games have run with it.
 
 ## v1.000.030
 

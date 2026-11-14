@@ -1,0 +1,64 @@
+Build 039 (from the 038 heap census: Fiber::Fiber <- KThread::InitializeThread held 628-664 MiB in
+168 allocations; the user asked for the emulator to use less memory, the game to have it):
+- A fiber that runs on a stack allocates one of FiberStackSize() bytes (EDEN_NX2_FIBER_STACK_KIB,
+  128..8192; headless/main.cpp: 1024 KiB on the console, fiber-stack-kib.txt). The rewind stack,
+  which no context was ever made on, is gone; a thread's own fiber allocates no stack.
+- (headless/heap_arenas.inc) census table 262144 entries, 128 probes (038 dropped 718258 samples).
+
+diff --git a/src/common/fiber.cpp b/src/common/fiber.cpp
+--- a/src/common/fiber.cpp
++++ b/src/common/fiber.cpp
+@@ -4,6 +4,8 @@
+ // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <cstdlib>
++#include <memory>
+ #include <thread>
+ #include <mutex>
+ 
+@@ -21,13 +23,26 @@
+ #endif
+ constexpr u32 CANARY_VALUE = 0xDEADBEEF;
+ 
++size_t FiberStackSize() {
++    static const size_t size = [] {
++        if (const char* value = std::getenv("EDEN_NX2_FIBER_STACK_KIB")) {
++            const unsigned long long kib = std::strtoull(value, nullptr, 10);
++            if (kib >= 128 && kib <= 8192) {
++                return static_cast<size_t>(kib) << 10;
++            }
++        }
++        return DEFAULT_STACK_SIZE;
++    }();
++    return size;
++}
++
+ struct Fiber::FiberImpl {
+     FiberImpl() {}
+ 
+     u32 canary_1 = CANARY_VALUE;
+-    // Context setup writes its frame; unused stack pages need no eager clearing.
+-    std::array<u8, DEFAULT_STACK_SIZE> stack;
+-    std::array<u8, DEFAULT_STACK_SIZE> rewind_stack;
++    // Context setup writes its frame; unused stack pages need no eager clearing. Allocated only
++    // for a fiber that runs on it (FiberStackSize() bytes); no rewind stack (none was ever used).
++    std::unique_ptr<u8[]> stack;
+     u32 canary_2 = CANARY_VALUE;
+ 
+     boost::context::detail::fcontext_t context{};
+@@ -50,10 +65,10 @@
+ 
+ Fiber::Fiber(std::function<void()>&& entry_point_func) : impl{std::make_unique<FiberImpl>()} {
+     impl->entry_point = std::move(entry_point_func);
+-    impl->stack_limit = impl->stack.data();
+-    impl->rewind_stack_limit = impl->rewind_stack.data();
+-    u8* stack_base = impl->stack_limit + DEFAULT_STACK_SIZE;
+-    impl->context = boost::context::detail::make_fcontext(stack_base, impl->stack.size(), [](boost::context::detail::transfer_t transfer) -> void {
++    impl->stack.reset(new u8[FiberStackSize()]);
++    impl->stack_limit = impl->stack.get();
++    u8* stack_base = impl->stack_limit + FiberStackSize();
++    impl->context = boost::context::detail::make_fcontext(stack_base, FiberStackSize(), [](boost::context::detail::transfer_t transfer) -> void {
+         auto* fiber = static_cast<Fiber*>(transfer.data);
+         ASSERT(fiber && fiber->impl && fiber->impl->previous_fiber && fiber->impl->previous_fiber->impl);
+         ASSERT(fiber->impl->canary_1 == CANARY_VALUE);

@@ -1,4 +1,4 @@
-// ProsperoEden - The launcher's textures: its own art and lazily loaded covers.
+// DirkuLator - The launcher's textures: its own art and lazily loaded covers.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

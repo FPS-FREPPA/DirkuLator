@@ -1,0 +1,102 @@
+DirkuLator 0.5.15: ATOMG through a register address with an offset that fits Maxwell ATOM's 20 bits is lowered
+(OoT compute shader at +0x3850, [R24.64-0x8], was rejected and skipped); on the PS5 the texture collector follows
+the shared pool's largest free block, not the driver's fixed 6 GiB usage; translator salt 0x...16.
+
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -1691,12 +1691,15 @@
+             // SM70 encoding: address 24..31 with the .E bit at 72, data 32..39, immediate offset 40..63,
+             // type 73..75, ordering 76..79, no predicate output (81..83 = PT), operation 87..90 and no
+             // uniform-register addressing (bit 91). Only a zero offset and the captured ADD U32 form pass.
++            // 0.5.15: an offset that fits Maxwell ATOM's signed 20 bits (28..47) is carried over
++            // (OoT: [R24.64-0x8]); it was rejected and the dispatch skipped.
+             const u32 address = insn.Bits(24, 8), data = insn.Bits(32, 8);
+-            if (address >= 254 || (address & 1) || data == 255 || insn.Bits(40, 24) ||
+-                insn.words[2] != 0x001ee100)
++            const s32 offset = static_cast<s32>(insn.Bits(40, 24) << 8) >> 8;
++            if (address >= 254 || (address & 1) || data == 255 || offset < -(1 << 19) ||
++                offset >= (1 << 19) || insn.words[2] != 0x001ee100)
+                 return fail(index, "native global register atomic mode");
+             emit(0xed00000000000000ULL | predicate | dest | (u64{address} << 8) |
+-                (u64{data} << 20) | (u64{1} << 48));
++                (u64{data} << 20) | (u64{static_cast<u32>(offset) & 0xfffffU} << 28) | (u64{1} << 48));
+             break;
+         }
+         case 0x9a8: { // ATOMG.E.ADD.STRONG.GPU U32 through a uniform pointer.
+diff --git a/src/shader_recompiler/frontend/ampere/native.h b/src/shader_recompiler/frontend/ampere/native.h
+--- a/src/shader_recompiler/frontend/ampere/native.h
++++ b/src/shader_recompiler/frontend/ampere/native.h
+@@ -43,7 +43,7 @@
+ 
+ // Salt mixed into the pipeline cache identity of native-translated programs. Bump it whenever the
+ // native translation changes so cached results of an older translator are never reused.
+-inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a00015ULL;
++inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a00016ULL;
+ 
+ // Maxwell Location offset of native instruction `index` (same mapping the lowering uses).
+ [[nodiscard]] constexpr u32 LocationOf(u32 index) {
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -162,6 +162,11 @@
+     }
+ }
+ 
++#if defined(EDEN_NX2_PS5_PROTO)
++/// 0.5.15: the shared pool's largest free block is under 96 MiB (set by TickFrame).
++inline bool ps5_pool_tight{};
++#endif
++
+ template <class P>
+ void TextureCache<P>::RunGarbageCollector() {
+     bool high_priority_mode = false;
+@@ -177,14 +182,20 @@
+     const auto Configure = [&](bool allow_aggressive) {
+         high_priority_mode = total_used_memory >= expected_memory;
+         aggressive_mode = allow_aggressive && total_used_memory >= critical_memory;
+-        ticks_to_destroy = aggressive_mode ? 10ULL : high_priority_mode ? 25ULL : 50ULL;
++#if defined(EDEN_NX2_PS5_PROTO)
++        const bool pool_tight = ps5_pool_tight;
++#else
++        constexpr bool pool_tight = false;
++#endif
++        // 0.5.15: with the PS5 pool nearly out, unused images go after 4 frames, 160 a frame.
++        ticks_to_destroy = aggressive_mode ? (pool_tight ? 4ULL : 10ULL) : high_priority_mode ? 25ULL : 50ULL;
+         // EDEN_NX2_TC_MIN_AGE=<frames>: never evict images used more recently (thrash tests).
+         static const u64 min_age = [] {
+             const char* value = std::getenv("EDEN_NX2_TC_MIN_AGE");
+             return value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
+         }();
+         ticks_to_destroy = (std::max)(ticks_to_destroy, min_age);
+-        num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);
++        num_iterations = aggressive_mode ? (pool_tight ? 160 : 40) : (high_priority_mode ? 20 : 10);
+     };
+     const auto CanEvictCostly = [&](const Image& image) {
+         return aggressive_mode || (evict_old_costly && high_priority_mode) ||
+@@ -384,6 +395,25 @@
+     if (runtime.CanReportMemoryUsage()) {
+         total_used_memory = runtime.GetDeviceMemoryUsage();
+     }
++#if defined(EDEN_NX2_PS5_PROTO)
++    // 0.5.15: the driver's usage is its 6 GiB heap, not the shared pool. Collect by the pool's
++    // largest free block: normal from 640 MiB up, high priority under it, aggressive under 256 MiB,
++    // and under 96 MiB the tight pass. GPU-written images are still read back before they go.
++    if (const auto pool_largest = ::Eden::Performance::graphics_memory_free.load(std::memory_order_relaxed)) {
++        const u64 largest = pool_largest();
++        if (largest != 0) {
++            ps5_pool_tight = largest < 96_MiB;
++            if (largest < 256_MiB) {
++                total_used_memory = (std::max)(total_used_memory,
++                                               critical_memory + (ps5_pool_tight ? 1_GiB : 512_MiB));
++            } else if (largest < 640_MiB && expected_memory + 256_MiB < critical_memory) {
++                total_used_memory = (std::clamp)(total_used_memory, expected_memory + 256_MiB, critical_memory - 1);
++            } else {
++                total_used_memory = (std::min)(total_used_memory, expected_memory - 1);
++            }
++        }
++    }
++#endif
+     // 033 (layer 99zzzzp): a fall of 192 MiB or more in the pool's largest free block against
+     // the reading of up to a second ago (64 MiB once under 768 MiB) logs EDEN_MEMORY_DROP and
+     // runs the memory report below now, at most twice a second. EDEN_NX2_MEMORY_DROP_OFF: never.

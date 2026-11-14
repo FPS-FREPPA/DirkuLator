@@ -70,7 +70,10 @@ static atomic_flag eden_heap_grow_lock = ATOMIC_FLAG_INIT;
 static struct {
   _Atomic uintptr_t address;
   size_t size;
+  uintptr_t site[6]; /* 041: code addresses on the stack when it was made (offsets from the text) */
 } eden_heap_large[EDEN_HEAP_LARGE_BLOCKS];
+extern const char __eden_text_start[] __attribute__((weak));
+extern const char __eden_text_end[] __attribute__((weak));
 static atomic_uint eden_heap_large_count;
 static atomic_size_t eden_heap_large_bytes;
 
@@ -148,6 +151,7 @@ struct eden_heap_thread {
   long live;
   long blocks;
   unsigned pending;
+  unsigned census; /* allocations since the census last sampled this thread */
   void *bins[EDEN_TCACHE_BINS];
   unsigned char counts[EDEN_TCACHE_BINS];
 };
@@ -226,6 +230,15 @@ static void *eden_heap_large_allocate(size_t bytes) {
       return NULL;
     }
     eden_heap_large[i].size = bytes;
+    /* 041: who made it (the census table loses large blocks to its full slots). */
+    memset(eden_heap_large[i].site, 0, sizeof(eden_heap_large[i].site));
+    if (__eden_text_start != NULL && __eden_text_end != NULL) {
+      const uintptr_t start = (uintptr_t)__eden_text_start, end = (uintptr_t)__eden_text_end;
+      const uintptr_t *stack = (const uintptr_t *)__builtin_frame_address(0);
+      for (int w = 0, found = 0; w < 64 && found < 6; ++w)
+        if (stack[w] >= start && stack[w] < end)
+          eden_heap_large[i].site[found++] = stack[w] - start;
+    }
     atomic_fetch_add_explicit(&eden_heap_large_bytes, bytes, memory_order_relaxed);
     atomic_fetch_add_explicit(&eden_heap_large_count, 1, memory_order_release);
     atomic_store_explicit(&eden_heap_large[i].address, (uintptr_t)block, memory_order_release);
@@ -610,11 +623,221 @@ static void *eden_heap_allocate(size_t count, size_t size, int zero) {
   return zero ? eden_heap_main(EDEN_HEAP_CALLOC, count, size) : eden_heap_main(EDEN_HEAP_MALLOC, bytes, 0);
 }
 
+/* Heap census (037): which code holds the heap. In 033-036 the pool ran out with the heap at
+ * 2.3-2.8 GiB (882 MiB live in 1.2 M blocks once the game had loaded) while the guest's memory was
+ * full slots and graphics flat. One allocation in EDEN_CENSUS_SAMPLE, and every one of
+ * EDEN_CENSUS_LARGE or more, is charged to the first EDEN_CENSUS_DEPTH return addresses found on
+ * the stack above this frame (a scan of EDEN_CENSUS_WORDS words, the crash report's method), until
+ * it is freed. Every 30 s and when the heap takes a piece, EDEN_HEAP_SITE lines on stderr give the
+ * sites holding the most, as offsets from __eden_text_start (logs\tools\sym.sh-style addr2line).
+ * EDEN_NX2_HEAP_CENSUS_OFF: none. Off where the text symbols are missing (host checks). */
+#include <time.h>
+#include <unistd.h>
+#define EDEN_CENSUS_SITES 2048u
+#define EDEN_CENSUS_LIVE 262144u /* 039: 65536 dropped 718258 samples in 038 */
+#define EDEN_CENSUS_PROBES 128u
+#define EDEN_CENSUS_SAMPLE 128u
+#define EDEN_CENSUS_LARGE ((size_t)256 << 10)
+#define EDEN_CENSUS_DEPTH 4
+#define EDEN_CENSUS_WORDS 48
+#define EDEN_CENSUS_REPORTED 10
+struct eden_census_site {
+  uintptr_t key[EDEN_CENSUS_DEPTH];
+  long long live;
+  unsigned long long allocs;
+};
+static struct eden_census_site eden_census_sites[EDEN_CENSUS_SITES];
+static _Atomic uintptr_t eden_census_ptr[EDEN_CENSUS_LIVE]; /* 0 empty, 1 removed */
+static unsigned eden_census_site_of[EDEN_CENSUS_LIVE];
+static long long eden_census_bytes_of[EDEN_CENSUS_LIVE];
+static atomic_flag eden_census_lock = ATOMIC_FLAG_INIT;
+static unsigned eden_census_counter; /* threads without a record share this one (racy: a sample rate) */
+static atomic_int eden_census_state; /* 0 not decided, 1 on, 2 off */
+static long long eden_census_reported_ns;
+static unsigned eden_census_reported_pieces;
+static unsigned long long eden_census_dropped;
+
+static int eden_census_on(void) {
+  int state = atomic_load_explicit(&eden_census_state, memory_order_relaxed);
+  if (state == 0) {
+    state = __eden_text_start != NULL && __eden_text_end != NULL && getenv("EDEN_NX2_HEAP_CENSUS_OFF") == NULL ? 1 : 2;
+    atomic_store_explicit(&eden_census_state, state, memory_order_relaxed);
+  }
+  return state == 1;
+}
+
+static unsigned eden_census_hash(uintptr_t value, unsigned bits) {
+  return (unsigned)(((uint64_t)value * 0x9E3779B97F4A7C15ull) >> (64 - bits));
+}
+
+static void eden_census_lock_take(void) {
+  while (atomic_flag_test_and_set_explicit(&eden_census_lock, memory_order_acquire))
+    ;
+}
+
+static void eden_census_lock_give(void) { atomic_flag_clear_explicit(&eden_census_lock, memory_order_release); }
+
+/* Under the lock: the report as text into line (at most size), or 0 when it is not time. */
+static size_t eden_census_report_locked(char *line, size_t size) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  const long long ns = (long long)now.tv_sec * 1000000000ll + now.tv_nsec;
+  const unsigned pieces = atomic_load_explicit(&eden_heap_pieces_used, memory_order_relaxed);
+  if (ns - eden_census_reported_ns < 30000000000ll && pieces == eden_census_reported_pieces)
+    return 0;
+  eden_census_reported_ns = ns;
+  eden_census_reported_pieces = pieces;
+  unsigned top[EDEN_CENSUS_REPORTED];
+  unsigned count = 0;
+  long long total = 0;
+  for (unsigned i = 0; i < EDEN_CENSUS_SITES; ++i) {
+    if (eden_census_sites[i].allocs == 0)
+      continue;
+    total += eden_census_sites[i].live;
+    unsigned at = count < EDEN_CENSUS_REPORTED ? count++ : EDEN_CENSUS_REPORTED;
+    if (at == EDEN_CENSUS_REPORTED) {
+      if (eden_census_sites[i].live <= eden_census_sites[top[EDEN_CENSUS_REPORTED - 1]].live)
+        continue;
+      at = EDEN_CENSUS_REPORTED - 1;
+    }
+    while (at > 0 && eden_census_sites[top[at - 1]].live < eden_census_sites[i].live) {
+      top[at] = top[at - 1];
+      --at;
+    }
+    top[at] = i;
+  }
+  size_t used = (size_t)snprintf(line, size,
+                                 "EDEN_HEAP_CENSUS pieces_mib=%u sampled_live_mib=%lld text=%#lx dropped=%llu\n",
+                                 pieces << (EDEN_HEAP_PIECE_SHIFT - 20), total >> 20,
+                                 (unsigned long)(uintptr_t)__eden_text_start, eden_census_dropped);
+  /* 041: every large block alive (memory of its own, 32 MiB or more), with who made it. */
+  for (unsigned i = 0; i < EDEN_HEAP_LARGE_BLOCKS && used < size; ++i) {
+    if (atomic_load_explicit(&eden_heap_large[i].address, memory_order_acquire) <= 1)
+      continue;
+    const uintptr_t *at = eden_heap_large[i].site;
+    used += (size_t)snprintf(line + used, size - used,
+                             "EDEN_HEAP_LARGE size_mib=%zu at=%#lx,%#lx,%#lx,%#lx,%#lx,%#lx\n",
+                             eden_heap_large[i].size >> 20, (unsigned long)at[0], (unsigned long)at[1],
+                             (unsigned long)at[2], (unsigned long)at[3], (unsigned long)at[4], (unsigned long)at[5]);
+  }
+  for (unsigned i = 0; i < count && used < size; ++i) {
+    const struct eden_census_site *site = &eden_census_sites[top[i]];
+    used += (size_t)snprintf(line + used, size - used,
+                             "EDEN_HEAP_SITE live_mib=%lld allocs=%llu at=%#lx,%#lx,%#lx,%#lx\n", site->live >> 20,
+                             site->allocs, (unsigned long)site->key[0], (unsigned long)site->key[1],
+                             (unsigned long)site->key[2], (unsigned long)site->key[3]);
+  }
+  return used < size ? used : size - 1;
+}
+
+/* caller: the return address of the wrapper (malloc's is operator new for C++ code; aligned_alloc's
+ * and posix_memalign's are the code that asked), the first part of the site; the stack scan adds
+ * the rest (041: the six 16 MiB aligned blocks had no usable site from the scan alone). */
+static void eden_census_alloc(void *address, size_t bytes, const void *caller) {
+  if (address == NULL || !eden_census_on())
+    return;
+  long long weight;
+  if (bytes >= EDEN_CENSUS_LARGE)
+    weight = (long long)bytes;
+  else {
+    struct eden_heap_thread *self = eden_heap_self();
+    unsigned *counter = self != NULL ? &self->census : &eden_census_counter;
+    if (++*counter % EDEN_CENSUS_SAMPLE != 0)
+      return;
+    weight = (long long)bytes * EDEN_CENSUS_SAMPLE;
+  }
+  uintptr_t key[EDEN_CENSUS_DEPTH] = {0};
+  const uintptr_t start = (uintptr_t)__eden_text_start, end = (uintptr_t)__eden_text_end;
+  const uintptr_t *stack = (const uintptr_t *)__builtin_frame_address(0);
+  int found = 0;
+  if ((uintptr_t)caller >= start && (uintptr_t)caller < end)
+    key[found++] = (uintptr_t)caller - start;
+  for (int i = 0; i < EDEN_CENSUS_WORDS && found < EDEN_CENSUS_DEPTH; ++i)
+    if (stack[i] >= start && stack[i] < end && (found == 0 || stack[i] - start != key[0]))
+      key[found++] = stack[i] - start;
+  eden_census_lock_take();
+  unsigned site = eden_census_hash(key[0] ^ (key[1] << 1) ^ (key[2] << 2) ^ (key[3] << 3), 11);
+  unsigned probe = 0;
+  for (; probe < EDEN_CENSUS_PROBES; ++probe, site = (site + 1) & (EDEN_CENSUS_SITES - 1)) {
+    struct eden_census_site *entry = &eden_census_sites[site];
+    if (entry->allocs == 0) {
+      memcpy(entry->key, key, sizeof(key));
+      break;
+    }
+    if (memcmp(entry->key, key, sizeof(key)) == 0)
+      break;
+  }
+  if (probe < EDEN_CENSUS_PROBES) {
+    unsigned slot = eden_census_hash((uintptr_t)address, 18);
+    for (probe = 0; probe < EDEN_CENSUS_PROBES; ++probe, slot = (slot + 1) & (EDEN_CENSUS_LIVE - 1)) {
+      const uintptr_t value = atomic_load_explicit(&eden_census_ptr[slot], memory_order_relaxed);
+      if (value <= 1) {
+        eden_census_site_of[slot] = site;
+        eden_census_bytes_of[slot] = weight;
+        atomic_store_explicit(&eden_census_ptr[slot], (uintptr_t)address, memory_order_release);
+        eden_census_sites[site].live += weight;
+        eden_census_sites[site].allocs++;
+        break;
+      }
+    }
+  }
+  if (probe == EDEN_CENSUS_PROBES)
+    eden_census_dropped++;
+  eden_census_lock_give();
+}
+
+/* aligned_alloc (src/aligned_alloc.c) goes through posix_memalign, whose return address is
+ * aligned_alloc itself: charge the block again to the code that asked (041). */
+static void eden_census_free(void *address);
+void eden_heap_census_recharge(void *address, size_t bytes, const void *caller) {
+  eden_census_free(address);
+  eden_census_alloc(address, bytes, caller);
+}
+
+/* The report, from the session memory report (performance.cpp), never from an allocation: 039
+ * wrote it inside the allocator under this spin lock, and the console hung at the intro movie's
+ * allocations with every thread stopped (the log cut mid-line). Here the lock is held only while
+ * the text is made, and the text is written after it is released. */
+void eden_heap_census_report(void) {
+  if (atomic_load_explicit(&eden_census_state, memory_order_relaxed) != 1)
+    return;
+  char line[4096];
+  eden_census_lock_take();
+  const size_t length = eden_census_report_locked(line, sizeof(line));
+  eden_census_lock_give();
+  if (length != 0) {
+    fwrite(line, 1, length, stderr);
+    fflush(stderr);
+  }
+}
+
+static void eden_census_free(void *address) {
+  if (address == NULL || atomic_load_explicit(&eden_census_state, memory_order_relaxed) != 1)
+    return;
+  unsigned slot = eden_census_hash((uintptr_t)address, 18);
+  for (unsigned probe = 0; probe < EDEN_CENSUS_PROBES; ++probe, slot = (slot + 1) & (EDEN_CENSUS_LIVE - 1)) {
+    const uintptr_t value = atomic_load_explicit(&eden_census_ptr[slot], memory_order_acquire);
+    if (value == 0)
+      return;
+    if (value == (uintptr_t)address) {
+      eden_census_lock_take();
+      if (atomic_load_explicit(&eden_census_ptr[slot], memory_order_relaxed) == (uintptr_t)address) {
+        eden_census_sites[eden_census_site_of[slot]].live -= eden_census_bytes_of[slot];
+        atomic_store_explicit(&eden_census_ptr[slot], 1, memory_order_release);
+      }
+      eden_census_lock_give();
+      return;
+    }
+  }
+}
+
 void *__wrap_malloc(size_t size) {
   if (!ps5_heap_ready())
     return __real_malloc(size);
   void *cached = eden_tcache_take(size);
-  return cached != NULL ? cached : eden_heap_record(eden_heap_allocate(1, size, 0), size);
+  void *result = cached != NULL ? cached : eden_heap_record(eden_heap_allocate(1, size, 0), size);
+  eden_census_alloc(result, size, __builtin_return_address(0));
+  return result;
 }
 
 void *__wrap_calloc(size_t count, size_t size) {
@@ -625,9 +848,10 @@ void *__wrap_calloc(size_t count, size_t size) {
     return NULL;
   }
   void *cached = eden_tcache_take(count * size);
-  if (cached != NULL)
-    return memset(cached, 0, count * size);
-  return eden_heap_record(eden_heap_allocate(count, size, 1), count * size);
+  void *result = cached != NULL ? memset(cached, 0, count * size)
+                                : eden_heap_record(eden_heap_allocate(count, size, 1), count * size);
+  eden_census_alloc(result, count * size, __builtin_return_address(0));
+  return result;
 }
 
 void *__wrap_realloc(void *address, size_t size) {
@@ -637,6 +861,8 @@ void *__wrap_realloc(void *address, size_t size) {
   const int large = in_range ? -1 : eden_heap_large_find(address);
   if (!in_range && large < 0)
     return __real_realloc(address, size);
+  /* The census charges the block again where it ends up (same address or moved). */
+  eden_census_free(address);
   const size_t before = in_range ? sceLibcMspaceMallocUsableSize(address) : eden_heap_large[large].size;
   if (large >= 0) {
     if (size == 0) {
@@ -645,13 +871,16 @@ void *__wrap_realloc(void *address, size_t size) {
       return NULL;
     }
     /* A large block keeps its memory while the new size still needs most of it. */
-    if (size <= before && size >= before / 2)
+    if (size <= before && size >= before / 2) {
+      eden_census_alloc(address, size, __builtin_return_address(0));
       return address;
+    }
   } else if (size < EDEN_HEAP_LARGE_REQUEST || !eden_heap_grows) {
     void *owner = eden_heap_owner(address);
     void *result = sceLibcMspaceRealloc(owner, address, size);
     if (result) {
       eden_heap_account((long)sceLibcMspaceMallocUsableSize(result) - (long)before, 0);
+      eden_census_alloc(result, size, __builtin_return_address(0));
       return result;
     }
     if (size == 0) {
@@ -674,10 +903,12 @@ void *__wrap_realloc(void *address, size_t size) {
     eden_heap_large_free(large);
   else
     sceLibcMspaceFree(eden_heap_owner(address), address);
+  eden_census_alloc(moved, size, __builtin_return_address(0));
   return moved;
 }
 
 void __wrap_free(void *address) {
+  eden_census_free(address);
   if (eden_heap_in_range(address)) {
     const size_t usable = sceLibcMspaceMallocUsableSize(address);
     if (eden_tcache_keep(address, usable))
@@ -720,9 +951,10 @@ int __wrap_posix_memalign(void **address, size_t alignment, size_t size) {
       result = ENOMEM;
     }
   }
-  if (result == 0)
+  if (result == 0) {
     eden_heap_record(*address, size);
-  else
+    eden_census_alloc(*address, size, __builtin_return_address(0));
+  } else
     eden_heap_failed(size, atomic_load_explicit(&eden_heap_grow_why, memory_order_relaxed));
   return result;
 }

@@ -1,4 +1,4 @@
-// ProsperoEden - Launcher themes: colour roles, type, shape, motion, artwork, ambient light, sound.
+// DirkuLator - Launcher themes: colour roles, type, shape, motion, artwork, ambient light, sound.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

@@ -1,0 +1,67 @@
+PS5: keep 60 ms of rendered audio queued instead of 20 ms, and log how much of the output had no audio
+ready (EDEN_AUDIO_SINK, every five seconds). OoT's music breaks up on the main menu, where a movie is
+decoding on the CPU, but plays perfectly in gameplay; no host thread is pinned on a console where the
+CPU topology cannot be read, so a stall of more than 20 ms repeated the last sample.
+
+diff --git a/src/audio_core/adsp/apps/audio_renderer/audio_renderer.cpp b/src/audio_core/adsp/apps/audio_renderer/audio_renderer.cpp
+--- a/src/audio_core/adsp/apps/audio_renderer/audio_renderer.cpp
++++ b/src/audio_core/adsp/apps/audio_renderer/audio_renderer.cpp
+@@ -125,7 +125,13 @@
+         std::string name{fmt::format("ADSP_RenderStream-{}", i)};
+         streams[i] =
+             sink.AcquireSinkStream(system, channels, name, ::AudioCore::Sink::StreamType::Render);
++#ifdef EDEN_NX2_PS5_PROTO
++        // 12 blocks of 5 ms. With 4, a host stall over 20 ms (a movie's decoder threads share the
++        // CPU, no thread is pinned where the topology cannot be read) repeats the last sample.
++        streams[i]->SetRingSize(12);
++#else
+         streams[i]->SetRingSize(4);
++#endif
+     }
+ }
+ 
+diff --git a/src/audio_core/sink/sink_stream.cpp b/src/audio_core/sink/sink_stream.cpp
+--- a/src/audio_core/sink/sink_stream.cpp
++++ b/src/audio_core/sink/sink_stream.cpp
+@@ -15,6 +15,7 @@
+ #include "audio_core/audio_core.h"
+ #include "audio_core/common/common.h"
+ #include "audio_core/sink/sink_stream.h"
++#include <cstdio>
+ #include "common/common_types.h"
+ #include "common/fixed_point.h"
+ #include "common/scope_exit.h"
+@@ -228,6 +229,21 @@
+         }
+     }
+ 
++#ifdef EDEN_NX2_PS5_PROTO
++    // EDEN_AUDIO_SINK: every five seconds, how many frames went out and how many had no audio ready.
++    if (type == StreamType::Render) {
++        sink_probe_frames += num_frames;
++        sink_probe_padded += num_frames - actual_frames_written;
++        if (sink_probe_frames >= TargetSampleRate * 5) {
++            std::fprintf(stderr, "EDEN_AUDIO_SINK name=%s frames=%llu padded=%llu queue_limit=%u\n", name.c_str(),
++                         static_cast<unsigned long long>(sink_probe_frames),
++                         static_cast<unsigned long long>(sink_probe_padded), max_queue_size);
++            sink_probe_frames = 0;
++            sink_probe_padded = 0;
++        }
++    }
++#endif
++
+     {
+         std::scoped_lock lk{sample_count_lock};
+         last_sample_count_update_time = system.CoreTiming().GetGlobalTimeNs();
+diff --git a/src/audio_core/sink/sink_stream.h b/src/audio_core/sink/sink_stream.h
+--- a/src/audio_core/sink/sink_stream.h
++++ b/src/audio_core/sink/sink_stream.h
+@@ -252,6 +252,8 @@
+     std::atomic<u32> queued_buffers{};
+     /// The ring size for audio out buffers (usually 4, rarely 2 or 8)
+     u32 max_queue_size{};
++    u64 sink_probe_frames{};
++    u64 sink_probe_padded{};
+     /// Locks access to sample count tracking info
+     std::mutex sample_count_lock;
+     /// Minimum number of total samples that have been played since the last callback

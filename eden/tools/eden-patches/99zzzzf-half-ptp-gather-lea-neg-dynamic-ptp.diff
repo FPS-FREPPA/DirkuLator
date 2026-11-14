@@ -1,0 +1,347 @@
+From the 022 console runs (handoff of 2026-11-10). Two compute rejections repeated on every dispatch:
+- 6f9367bd41dc0b58 +0x340, TLD4.F16 with per-tap offsets (bits 76-78 = 2): lowered like the 32-bit
+  per-pixel gather (coordinates the pair at A, offsets the pair at B) with the FP16 packing.
+- 9387db798781f081 +0x4b50, LEA.HI with bit 63: -Rb, as the plain 0x211 form already reads bit 63;
+  Maxwell IADD negate-B (bit 48). Bit 62 is still rejected.
+FP16 packing put c0 in the high half in the gather and one more path (Eglantine dc3e912fb7 fixed the
+TEX path the same way). Per-tap offsets that are not constants were dropped in SPIR-V; one gather
+per tap now (ported from Eglantine 993a31c593, from Duck912 1e02498099). Rejections are logged per
+shader/instruction/reason at the 1st, 2nd, 4th... time; handle-zero lines are no longer capped at
+32 and say where the handle program stopped. EDEN_NX2_NO_HANDLE_ZERO turns handle 0 off. Bumps the
+translator salt.
+
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_image.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_image.cpp
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_image.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_image.cpp
+@@ -628,15 +628,58 @@
+                 Texture(ctx, info, index), coords, dref, operands.Mask(), operands.Span());
+ }
+ 
++// Per-tap offsets the IR could not fold to constants (ConstOffsets must be constant) were dropped
++// with "Not all arguments in PTP are immediate, ignoring", so every tap read the footprint at the
++// coordinate. Ported from Eglantine 993a31c593 (from Duck912 1e02498099): one gather per tap with
++// a runtime Offset, keeping the i0,j0 texel (w) of each footprint, which is that tap's texel.
++static bool IsDynamicPtp(IR::Inst* inst, const IR::Value& offset, const IR::Value& offset2) {
++    if (offset2.IsEmpty() || offset.IsEmpty() ||
++        inst->GetAssociatedPseudoOperation(IR::Opcode::GetSparseFromOp)) {
++        return false;
++    }
++    const auto constant{[](const IR::Value& value) {
++        return value.IsImmediate() || value.InstRecursive()->AreAllArgsImmediates();
++    }};
++    return !constant(offset) || !constant(offset2);
++}
++
++template <typename GatherFn>
++static Id GatherDynamicPtp(EmitContext& ctx, bool is_integer, Id result_type, const IR::Value& offset,
++                           const IR::Value& offset2, GatherFn&& gather) {
++    const std::array packed{ctx.Def(offset), ctx.Def(offset2)};
++    const Id component_type{is_integer ? ctx.U32[1] : ctx.F32[1]};
++    std::array<Id, 4> texels;
++    for (u32 tap = 0; tap < 4; ++tap) {
++        const Id vector{packed[tap / 2]};
++        const u32 first{(tap % 2) * 2};
++        const Id x{ctx.OpBitcast(ctx.S32[1], ctx.OpCompositeExtract(ctx.U32[1], vector, first))};
++        const Id y{ctx.OpBitcast(ctx.S32[1], ctx.OpCompositeExtract(ctx.U32[1], vector, first + 1))};
++        const Id tap_offset{ctx.OpCompositeConstruct(ctx.S32[2], x, y)};
++        texels[tap] = ctx.OpCompositeExtract(component_type, gather(tap_offset), 3U);
++    }
++    return ctx.OpCompositeConstruct(result_type, std::span<const Id>{texels.data(), texels.size()});
++}
++
+ Id EmitImageGather(EmitContext& ctx, IR::Inst* inst, const IR::Value& index, Id coords,
+                    const IR::Value& offset, const IR::Value& offset2) {
+     const auto info{inst->Flags<IR::TextureInstInfo>()};
+     const bool is_integer{IsTextureInteger(ctx, info)};
+     const Id result_type{is_integer ? ctx.U32[4] : ctx.F32[4]};
+-    const ImageOperands operands(ctx, offset, offset2);
+     if (ctx.profile.need_gather_subpixel_offset) {
+         coords = ImageGatherSubpixelOffset(ctx, info, TextureImage(ctx, info, index), coords);
+     }
++    if (IsDynamicPtp(inst, offset, offset2)) {
++        const Id texture{Texture(ctx, info, index)};
++        const Id component{ctx.Const(info.gather_component)};
++        const Id color{GatherDynamicPtp(ctx, is_integer, result_type, offset, offset2, [&](Id tap_offset) {
++            return Decorate(ctx, inst,
++                            ctx.OpImageGather(result_type, texture, coords, component,
++                                              spv::ImageOperandsMask::Offset,
++                                              std::span<const Id>{&tap_offset, 1}));
++        })};
++        return is_integer ? ctx.OpBitcast(ctx.F32[4], color) : color;
++    }
++    const ImageOperands operands(ctx, offset, offset2);
+     const Id color{Emit(&EmitContext::OpImageSparseGather, &EmitContext::OpImageGather, ctx, inst,
+                         result_type, Texture(ctx, info, index), coords,
+                         ctx.Const(info.gather_component), operands.MaskOptional(),
+@@ -649,10 +692,20 @@
+     const auto info{inst->Flags<IR::TextureInstInfo>()};
+     const bool is_integer{IsTextureInteger(ctx, info)};
+     const Id result_type{is_integer ? ctx.U32[4] : ctx.F32[4]};
+-    const ImageOperands operands(ctx, offset, offset2);
+     if (ctx.profile.need_gather_subpixel_offset) {
+         coords = ImageGatherSubpixelOffset(ctx, info, TextureImage(ctx, info, index), coords);
+     }
++    if (IsDynamicPtp(inst, offset, offset2)) {
++        const Id texture{Texture(ctx, info, index)};
++        const Id color{GatherDynamicPtp(ctx, is_integer, result_type, offset, offset2, [&](Id tap_offset) {
++            return Decorate(ctx, inst,
++                            ctx.OpImageDrefGather(result_type, texture, coords, dref,
++                                                  spv::ImageOperandsMask::Offset,
++                                                  std::span<const Id>{&tap_offset, 1}));
++        })};
++        return is_integer ? ctx.OpBitcast(ctx.F32[4], color) : color;
++    }
++    const ImageOperands operands(ctx, offset, offset2);
+     const Id color{Emit(&EmitContext::OpImageSparseDrefGather, &EmitContext::OpImageDrefGather,
+                         ctx, inst, result_type, Texture(ctx, info, index), coords, dref,
+                         operands.MaskOptional(), operands.Span())};
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -333,7 +333,7 @@
+             // Bits 32-39 name a register in register forms and in these opcodes: TEX/TLD, the
+             // store data, TXD's gradients and the data operand of RED (0x98e) and the global
+             // atomic (0x9a8), all listed with operand 32 in RegisterPressure.
+-            if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66 && opcode != 0x986 &&
++            if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66 && opcode != 0x986 && opcode != 0x59f &&
+                 opcode != 0xb6c && opcode != 0x98e && opcode != 0x9a8) continue;
+             const u32 reg = insn.Bits(bit, 8);
+             if (reg >= reserved_register && reg < 255) requires_shadow = true;
+@@ -1708,6 +1708,26 @@
+                 (u64{insn.Bits(32, 8)} << 20) | (u64{1} << 48));
+             break;
+         }
++        case 0x59f: { // SURED.D.2D/3D.ADD/OR.STRONG.GPU.IGN U32, direct descriptor.
++            // From Eglantine main (Lichii had the 2D/buffer form): 9387db798781f081 +0x5040 in the
++            // 022 console runs is SURED.OR into a 2D surface.
++            const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
++            const u32 data = insn.Bits(32, 8), coordinate = insn.Bits(24, 8);
++            const u32 dimension = insn.Bits(61, 3);
++            const u32 operation = insn.Bits(87, 3); // 2D SURED: ADD..XOR; 3D SURED: ADD and OR.
++            if ((insn.words[2] & ~0x03800000U) != 0x0010e000U || (dimension != 3 && operation != 0 && operation != 6) ||
++                (dimension != 3 && dimension != 5) || binding >= 18 ||
++                offset > 0x1fff || insn.Bits(59, 2) || coordinate > (dimension == 5 ? 252U : 253U))
++                return fail(index, "native surface reduction mode");
++            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
++                return fail(index, "native surface descriptor buffer conflict");
++            result.required_texture_buffer = binding;
++            // Maxwell SURED: operand 0-7, coordinates 8-15, operation 24, U32 = 0 at 20,
++            // type 33 (3 = 2D, 5 = 3D), bound offset 36, bound 51.
++            emit(0xeb40000000000000ULL | predicate | data | (u64{coordinate} << 8) |
++                (u64{operation} << 24) | (u64{dimension} << 33) | (u64{offset} << 36) | (u64{1} << 51));
++            break;
++        }
+         case 0xb97: { // SULD.P.2D/2D_ARRAY.IGN, direct descriptor and R, RG, or RGBA channels.
+             const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
+             const u32 coordinate = insn.Bits(24, 8);
+@@ -2322,8 +2342,10 @@
+                 // FP16 scalar 2D gather packs two selected values per output register.
+                 const u32 x = insn.Bits(24, 8), y = insn.Bits(32, 8);
+                 const u32 limit = (std::min)(246U, reserved_register);
++                const bool half_ptp = insn.Bits(76, 3) == 2;
+                 if (insn.Bits(59, 1) || !insn.Bits(60, 1) || insn.Bits(61, 3) != 1 ||
+-                    !mask || insn.Bits(76, 3) || insn.Bits(80, 1) || insn.Bits(81, 3) != 7 ||
++                    !mask || (insn.Bits(76, 3) && !half_ptp) || insn.Bits(80, 1) || insn.Bits(81, 3) != 7 ||
++                    (half_ptp && ((x & 1) || x + 1 >= limit || (y & 1) || y + 1 >= limit)) ||
+                     insn.Bits(89, 1) || insn.Bits(91, 1) || binding >= 18 || offset > 0x1fff ||
+                     (x >= limit && x != 255) || (y >= limit && y != 255) || dest >= limit ||
+                     (count > 2 ? second >= limit : second != 255))
+@@ -2334,12 +2356,16 @@
+                     emit(0x5c98000000000000ULL | predicate | target |
+                          (u64{15} << 39) | (u64{source} << 20));
+                 };
+-                copy(250, x); copy(251, y);
++                if (half_ptp && bindless)
++                    return fail(index, "native half per-pixel texture gather bindless mode");
++                copy(250, x); copy(251, half_ptp ? x + 1 : y);
++                if (half_ptp) { copy(248, y); copy(249, y + 1); }
+                 if (bindless)
+                     emit(0x4c98000000070000ULL | 248 | (u64{15} << 39) |
+                          (u64{offset} << 20) | (u64{binding} << 34));
+                 emit((bindless ? 0xdec0000000000000ULL : 0xc800000000000000ULL) | predicate | 250 |
+-                     (u64{250} << 8) | (u64{bindless ? 248U : 255U} << 20) |
++                     (u64{250} << 8) | (u64{bindless || half_ptp ? 248U : 255U} << 20) |
++                     (u64{half_ptp ? 2U : 0U} << 54) |
+                      (u64{2} << 28) | (u64{mask} << 31) |
+                      (u64{insn.Bits(87, 2)} << (bindless ? 38 : 56)) |
+                      (bindless ? 0 : u64{offset} << 36) |
+@@ -2347,7 +2373,7 @@
+                 const auto pack = [&](u32 target, u32 low, u32 high) {
+                     emit(0x5ca8000000000000ULL | predicate | 246 | (u64{1} << 8) | (u64{2} << 10) | (u64{low} << 20));
+                     emit(0x5ca8000000000000ULL | predicate | 247 | (u64{1} << 8) | (u64{2} << 10) | (u64{high} << 20));
+-                    emit(0x5c18000000000000ULL | predicate | target | (u64{246} << 8) | (u64{247} << 20) | (u64{16} << 39));
++                    emit(0x5c18000000000000ULL | predicate | target | (u64{247} << 8) | (u64{246} << 20) | (u64{16} << 39)); // c0 low (op_a is shifted up)
+                 };
+                 pack(static_cast<u32>(dest), 250, count > 1 ? 251U : 255U);
+                 if (count > 2) pack(second, 252, count > 3 ? 253U : 255U);
+@@ -3069,7 +3095,7 @@
+                         if (target == 255) return;
+                         emit(0x5ca8000000000000ULL | predicate | 246 | (u64{1} << 8) | (u64{2} << 10) | (u64{low} << 20));
+                         emit(0x5ca8000000000000ULL | predicate | 247 | (u64{1} << 8) | (u64{2} << 10) | (u64{high} << 20));
+-                        emit(0x5c18000000000000ULL | predicate | target | (u64{246} << 8) | (u64{247} << 20) | (u64{16} << 39));
++                        emit(0x5c18000000000000ULL | predicate | target | (u64{247} << 8) | (u64{246} << 20) | (u64{16} << 39)); // c0 low (op_a is shifted up)
+                     };
+                     pack(static_cast<u32>(dest), 250, components > 1 ? 251U : 255U);
+                     if (components > 2) {
+@@ -3847,13 +3873,14 @@
+             }
+             if (insn.Bits(80, 1)) {
+                 if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(81, 3) != 7 ||
+-                    insn.Bits(64, 8) != 255 || (opcode != 0x811 && insn.Bits(62, 2)))
++                    insn.Bits(64, 8) != 255 || (opcode == 0xc11 && insn.Bits(62, 2)) ||
++                    (opcode == 0x211 && insn.Bits(62, 1)))
+                     return fail(index, "native high effective address mode");
+                 const u32 b = opcode == 0xc11 || opcode == 0x811 ? operand(1, false) : insn.Bits(32, 8);
+                 emit(0x3828000000000000ULL | predicate | 250 | (u64{insn.Bits(24, 8)} << 8) |
+                     (u64{32 - insn.Bits(75, 5)} << 20) | (u64{insn.Bits(73, 1)} << 48));
+                 emit(base(0x5c10000000000000ULL) | (u64{250} << 8) |
+-                    (u64{b} << 20));
++                    (u64{b} << 20) | (u64{opcode == 0x211 ? insn.Bits(63, 1) : 0U} << 48));
+                 break;
+             }
+             if (opcode == 0x211 && (insn.words[2] & ~0x000ef800U) == 0x078000ffU &&
+diff --git a/src/shader_recompiler/frontend/ampere/native.h b/src/shader_recompiler/frontend/ampere/native.h
+--- a/src/shader_recompiler/frontend/ampere/native.h
++++ b/src/shader_recompiler/frontend/ampere/native.h
+@@ -43,7 +43,7 @@
+ 
+ // Salt mixed into the pipeline cache identity of native-translated programs. Bump it whenever the
+ // native translation changes so cached results of an older translator are never reused.
+-inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a00010ULL;
++inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a00011ULL;
+ 
+ // Maxwell Location offset of native instruction `index` (same mapping the lowering uses).
+ [[nodiscard]] constexpr u32 LocationOf(u32 index) {
+diff --git a/src/shader_recompiler/frontend/ampere/register_pressure.h b/src/shader_recompiler/frontend/ampere/register_pressure.h
+--- a/src/shader_recompiler/frontend/ampere/register_pressure.h
++++ b/src/shader_recompiler/frontend/ampere/register_pressure.h
+@@ -95,6 +95,9 @@
+     }
+     case 0x9a8: // ATOMG: result in Rd, data operand at bit 32.
+         operand(16); operand(32); break;
++    case 0x59f: // SURED: coordinates (x, y[, z]) from Ra, data operand at bit 32.
++        operand(24, input.Bits(61, 3) == 5 ? 3 : 2);
++        operand(32); break;
+     case 0x98e: // RED: address in Ra (a pair for .E), data operand at bit 32.
+         operand(24, input.Bits(72, 1) ? 2 : 1);
+         operand(32, input.Bits(73, 3) == 2 || input.Bits(73, 3) == 5 ? 2 : 1); break;
+diff --git a/src/shader_recompiler/ir_opt/texture_pass.cpp b/src/shader_recompiler/ir_opt/texture_pass.cpp
+--- a/src/shader_recompiler/ir_opt/texture_pass.cpp
++++ b/src/shader_recompiler/ir_opt/texture_pass.cpp
+@@ -4,6 +4,7 @@
+ // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <cstdlib>
+ #include <algorithm>
+ #include <atomic>
+ #include <cstdio>
+@@ -999,7 +1000,7 @@
+             // Not computable for a whole draw: fall through to the search below, which at least
+             // gives the shader a texture, instead of losing the pipeline and all its draws.
+             static std::atomic<u32> handle_fallbacks{};
+-            if (const u32 count = ++handle_fallbacks; count <= 32) {
++            if (const u32 count = ++handle_fallbacks; count <= 1024 || (count & (count - 1)) == 0) {
+                 const auto* root = inst.Arg(0).TryInstRecursive();
+                 std::fprintf(stderr, "EDEN_TEXTURE_HANDLE_FALLBACK root=%s stopped_at=%s budget=%d count=%u\n",
+                              root ? std::string(IR::NameOf(root->GetOpcode())).c_str() : "immediate",
+@@ -1011,7 +1012,8 @@
+             track_addr = TrackCached(inst.Arg(0), env, host_info, block);
+         } catch (const NotImplementedException& error) {
+             const auto* root = inst.Arg(0).TryInstRecursive();
+-            if (g_handle_programs && BufferTexture::ContainsLoadedHandle(inst.Arg(0))) {
++            static const bool handle_zero_off = std::getenv("EDEN_NX2_NO_HANDLE_ZERO") != nullptr;
++            if (!handle_zero_off && g_handle_programs && BufferTexture::ContainsLoadedHandle(inst.Arg(0))) {
+                 // No way to work this handle out: sample with handle 0 for this draw instead of
+                 // losing the pipeline and every draw that uses it.
+                 std::vector<u32> code{static_cast<u32>(HandleOp::Immediate), 0U};
+@@ -1024,9 +1026,10 @@
+                 addr.count = 1;
+                 addr.handle_program = static_cast<u32>(it - programs.begin());
+                 static std::atomic<u32> handle_zeroes{};
+-                if (const u32 count = ++handle_zeroes; count <= 32) {
+-                    std::fprintf(stderr, "EDEN_TEXTURE_HANDLE_ZERO root=%s count=%u\n",
+-                                 root ? std::string(IR::NameOf(root->GetOpcode())).c_str() : "immediate", count);
++                if (const u32 count = ++handle_zeroes; count <= 1024 || (count & (count - 1)) == 0) {
++                    std::fprintf(stderr, "EDEN_TEXTURE_HANDLE_ZERO root=%s stopped_at=%s stage=%d count=%u\n",
++                                 root ? std::string(IR::NameOf(root->GetOpcode())).c_str() : "immediate",
++                                 std::string(IR::NameOf(g_handle_failure)).c_str(), static_cast<int>(program.stage), count);
+                 }
+                 return TextureInst{addr, &inst, block};
+             }
+diff --git a/src/video_core/engines/kepler_compute.cpp b/src/video_core/engines/kepler_compute.cpp
+--- a/src/video_core/engines/kepler_compute.cpp
++++ b/src/video_core/engines/kepler_compute.cpp
+@@ -38,6 +38,22 @@
+ #endif
+ #include "video_core/rasterizer_interface.h"
+ #include "video_core/textures/decoders.h"
++#include <mutex>
++#include <string>
++#include <unordered_map>
++
++namespace {
++// How many times this exact rejection (shader, instruction, reason) happened; true at 1, 2, 4, ...
++inline bool NativeRejectionWorthLogging(const char* what, u64& times) {
++    static std::mutex mutex;
++    static std::unordered_map<std::string, u64> counts;
++    std::scoped_lock lock{mutex};
++    std::string key{what};
++    if (const auto words = key.find(" ["); words != std::string::npos) key.resize(words);
++    times = ++counts[key];
++    return (times & (times - 1)) == 0;
++}
++} // namespace
+ 
+ namespace Tegra::Engines {
+ 
+@@ -644,8 +660,9 @@
+         // Rate-limited: the first 32, then every 1024th with the running total.
+         static std::atomic<u64> rejected_compute{};
+         const u64 count = ++rejected_compute;
+-        if (count <= 32 || count % 1024 == 0) {
+-            LOG_CRITICAL(HW_GPU, "Native compute shader rejected: {} (compute rejections so far: {})", error.what(), count);
++        u64 times{};
++        if (NativeRejectionWorthLogging(error.what(), times) || count % 1024 == 0) {
++            LOG_CRITICAL(HW_GPU, "Native compute shader rejected: {} (compute rejections so far: {}, this one: {})", error.what(), count, times);
+         }
+         if (std::string_view{error.what()}.find("matrix multiply") != std::string_view::npos) {
+             DescribeNativeResources(qmd);
+diff --git a/src/video_core/shader_cache.cpp b/src/video_core/shader_cache.cpp
+--- a/src/video_core/shader_cache.cpp
++++ b/src/video_core/shader_cache.cpp
+@@ -25,6 +25,22 @@
+ #include "video_core/shader_cache.h"
+ #include "video_core/shader_environment.h"
+ #include "video_core/texture_cache/util.h"
++#include <mutex>
++#include <string>
++#include <unordered_map>
++
++namespace {
++// How many times this exact rejection (shader, instruction, reason) happened; true at 1, 2, 4, ...
++inline bool NativeRejectionWorthLogging(const char* what, u64& times) {
++    static std::mutex mutex;
++    static std::unordered_map<std::string, u64> counts;
++    std::scoped_lock lock{mutex};
++    std::string key{what};
++    if (const auto words = key.find(" ["); words != std::string::npos) key.resize(words);
++    times = ++counts[key];
++    return (times & (times - 1)) == 0;
++}
++} // namespace
+ 
+ namespace VideoCommon {
+ 
+@@ -144,8 +160,9 @@
+     // Rate-limited: the first 32, then every 1024th with the running total.
+     static std::atomic<u64> rejected_native_shaders{};
+     const u64 count = ++rejected_native_shaders;
+-    if (count <= 32 || count % 1024 == 0) {
+-        LOG_ERROR(HW_GPU, "Native graphics shader rejected: {} (rejections so far: {})", error.what(), count);
++    u64 times{};
++    if (NativeRejectionWorthLogging(error.what(), times) || count % 1024 == 0) {
++        LOG_ERROR(HW_GPU, "Native graphics shader rejected: {} (rejections so far: {}, this one: {})", error.what(), count, times);
+     }
+     return false;
+ }

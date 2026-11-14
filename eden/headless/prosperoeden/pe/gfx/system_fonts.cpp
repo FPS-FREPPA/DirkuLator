@@ -1,4 +1,4 @@
-// ProsperoEden - The console's own fonts, for the scripts the launcher's baked font lacks.
+// DirkuLator - The console's own fonts, for the scripts the launcher's baked font lacks.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

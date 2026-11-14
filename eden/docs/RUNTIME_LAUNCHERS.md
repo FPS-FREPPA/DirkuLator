@@ -1,11 +1,11 @@
 # Runtime launcher packs (test implementation)
 
-ProsperoEden can load an external launcher at runtime. The built-in launcher remains the
+DirkuLator can load an external launcher at runtime. The built-in launcher remains the
 default and recovery interface. A pack supplies Lua presentation code, images, fonts,
 recordings and a loading-screen description. It does not replace the emulator or load
 native plugins.
 
-Runtime launcher packs are included in ProsperoEden v1.003.000 as an experimental feature.
+Runtime launcher packs are included in DirkuLator v1.003.000 as an experimental feature.
 The built-in launcher remains available as the recovery interface.
 
 ## Installation and selection
@@ -56,7 +56,7 @@ the pack and its saved selection for repair.
 ```
 
 Optional `loading_scene` names a JSON file. `assets` maps logical image names to TGA
-files. The font is a ProsperoEden `.pefont`; native language fallback fonts are attached
+files. The font is a DirkuLator `.pefont`; native language fallback fonts are attached
 by the frontend. `sounds` names a directory of WAV recordings. The example in
 `examples/grid-launcher` uses only the upstream licensed font and neutral presentation.
 

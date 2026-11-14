@@ -1,0 +1,108 @@
+DirkuLator 0.5.12: the task/mesh probe (0.5) arms only with draw-diagnostics.txt and keeps its copies in deferred
+staging buffers (0.5.11 crashed at 837 s reading a copy EDEN_STAGING_TRIM had released). EDEN_HOST_CPU logs the JIT's
+host features and raw CPUID bits once.
+
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/block_of_code.cpp b/src/dynarmic/src/dynarmic/backend/x64/block_of_code.cpp
+--- a/src/dynarmic/src/dynarmic/backend/x64/block_of_code.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/block_of_code.cpp
+@@ -6,6 +6,7 @@
+  * SPDX-License-Identifier: 0BSD
+  */
+ 
++#include <cstdio>
+ #include "dynarmic/backend/x64/block_of_code.h"
+ 
+ #ifdef _WIN32
+@@ -120,6 +121,29 @@
+             f |= HostFeature::FastBMI2;
+         }
+     }
++    // 0.5.12: EDEN_HOST_CPU, once: what the JIT will use on this host, and the raw CPUID bits.
++    {
++        std::array<u32, 4> leaf1{};
++        std::array<u32, 4> leaf7{};
++        std::array<u32, 4> ext1{};
++        cpu_info.getCpuid(1, leaf1.data());
++        cpu_info.getCpuidEx(7, 0, leaf7.data());
++        cpu_info.getCpuid(0x80000001, ext1.data());
++        std::fprintf(stderr,
++                     "EDEN_HOST_CPU features=%#llx ssse3=%d sse41=%d sse42=%d avx=%d avx2=%d fma=%d f16c=%d "
++                     "popcnt=%d lzcnt=%d bmi1=%d bmi2=%d fast_bmi2=%d aes=%d pclmul=%d sha=%d avx512f=%d "
++                     "cpuid1 eax=%#x ecx=%#x edx=%#x cpuid7 ebx=%#x ecx=%#x ext1 ecx=%#x\n",
++                     static_cast<unsigned long long>(f), (f & HostFeature::SSSE3) != HostFeature{},
++                     (f & HostFeature::SSE41) != HostFeature{}, (f & HostFeature::SSE42) != HostFeature{},
++                     (f & HostFeature::AVX) != HostFeature{}, (f & HostFeature::AVX2) != HostFeature{},
++                     (f & HostFeature::FMA) != HostFeature{}, (f & HostFeature::F16C) != HostFeature{},
++                     (f & HostFeature::POPCNT) != HostFeature{}, (f & HostFeature::LZCNT) != HostFeature{},
++                     (f & HostFeature::BMI1) != HostFeature{}, (f & HostFeature::BMI2) != HostFeature{},
++                     (f & HostFeature::FastBMI2) != HostFeature{}, (f & HostFeature::AES) != HostFeature{},
++                     (f & HostFeature::PCLMULQDQ) != HostFeature{}, (f & HostFeature::SHA) != HostFeature{},
++                     (f & HostFeature::AVX512F) != HostFeature{}, leaf1[0], leaf1[2], leaf1[3], leaf7[1],
++                     leaf7[2], ext1[2]);
++    }
+     return f;
+ #endif
+ }();
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -73,6 +73,14 @@
+ #include "video_core/gpu_written_pages.h"
+ 
+ namespace Vulkan {
++namespace {
++// 0.5.12: the task/mesh probe (EDEN_TASK_PROBE, 0.5-0.5.2) runs only when
++// /data/eden-nx2/draw-diagnostics.txt exists, checked once (0.5.11 crashed in its readback).
++bool TaskProbeEnabled() {
++    static const bool enabled = static_cast<bool>(std::ifstream("/data/eden-nx2/draw-diagnostics.txt"));
++    return enabled;
++}
++} // Anonymous namespace
+ 
+ using Maxwell = Tegra::Engines::Maxwell3D::Regs;
+ using VideoCommon::ImageViewId;
+@@ -229,10 +237,11 @@
+     task_probe.copy_pending = false;
+     task_probe.same_submission = scheduler.CurrentTick() == task_probe.arm_tick;
+     constexpr u64 args_bytes{Shader::Backend::SPIRV::MESH_EMULATION_ARGS_WORDS * 4};
+-    task_probe.args_copy = staging_pool.Request(args_bytes, MemoryUsage::Download);
+-    task_probe.output_copy = staging_pool.Request(task_probe.output_bytes, MemoryUsage::Download);
++    // 0.5.12: deferred, so the staging trim and reuse leave them alone until ReadTaskProbe frees them.
++    task_probe.args_copy = staging_pool.Request(args_bytes, MemoryUsage::Download, true);
++    task_probe.output_copy = staging_pool.Request(task_probe.output_bytes, MemoryUsage::Download, true);
+     task_probe.payload_copy = staging_pool.Request((std::max)(task_probe.payload_bytes, u64{16}),
+-                                                   MemoryUsage::Download);
++                                                   MemoryUsage::Download, true);
+     scheduler.RequestOutsideRenderPassOperationContext();
+     scheduler.Record([arena = task_probe.arena, args_source = task_probe.args_source,
+                       args_offset = task_probe.args_offset, args_copy = task_probe.args_copy,
+@@ -427,6 +436,9 @@
+                                                dispatched, payload)};
+     std::fputs(payload_line.c_str(), stderr);
+     std::fputs(line.c_str(), stderr);
++    for (StagingBufferRef* const ref : {&task_probe.args_copy, &task_probe.output_copy, &task_probe.payload_copy}) {
++        staging_pool.FreeDeferred(*ref, true);
++    }
+ }
+ 
+ void RasterizerVulkan::ReleaseMeshEmulationBuffers() {
+@@ -903,7 +915,7 @@
+             const bool other_target{!shadow_target && !view_target};
+             const bool late{probe_frame >= next_probe_frame + 120};
+             const u32 want{rotation % 3};
+-            if (!task_probe.copy_pending && !task_probe.read_pending &&
++            if (TaskProbeEnabled() && !task_probe.copy_pending && !task_probe.read_pending &&
+                 probe_frame >= next_probe_frame && probe_setup && probe_setup->block_words != 0 &&
+                 (late || (want == 0   ? shadow_target
+                           : want == 1 ? view_target && groups >= 8
+@@ -966,8 +978,8 @@
+             static u64 next_plain_frame{};
+             const u64 plain_frame{VideoCommon::NativeDrawTrace::frame.load(std::memory_order_relaxed)};
+             const MeshEmulationSetup* const plain_setup{pipeline->MeshEmulation()};
+-            if (!task_probe.copy_pending && !task_probe.read_pending && plain_frame >= next_plain_frame &&
+-                plain_setup && plain_setup->block_words != 0) {
++            if (TaskProbeEnabled() && !task_probe.copy_pending && !task_probe.read_pending &&
++                plain_frame >= next_plain_frame && plain_setup && plain_setup->block_words != 0) {
+                 next_plain_frame = plain_frame + 30;
+                 const auto& plain_regs{maxwell3d->regs};
+                 const StagingBufferRef& out{mesh_draw_buffers.front()};

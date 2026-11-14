@@ -1,0 +1,108 @@
+DirkuLator 0.5.19 (diagnostic, no rendering change): EDEN_TASK_SPIKES after each EDEN_TASK_PROBE - spike triangles
+of the emulated mesh output (every corner in front of the camera, spanning more than half the screen in NDC), the
+number of groups holding them and, for the first 8 such groups, the task they belong to (prefix sum of the payload
+counts, as the distribution pass computes it), their place among its mesh workgroups and the task's payload words.
+
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -320,10 +320,27 @@
+     std::string first_bad;
+     f32 min_x{1e30f}, max_x{-1e30f}, min_y{1e30f}, max_y{-1e30f}, min_z{1e30f}, max_z{-1e30f};
+     std::string sample;
++    // 0.5.19: spike triangles - every corner in front of the camera, spanning more than half the
++    // screen in NDC - and, for the first groups that hold one, the task they belong to, their place
++    // among its mesh workgroups and the task's payload. The tasks' first groups are the distribution
++    // pass's prefix sum of the counts at payload word 1 (emit_spirv_mesh.cpp).
++    u64 spikes{}, spike_groups{};
++    std::string spike_detail;
++    std::vector<u32> task_first;
++    if (!plain && probe.payload_stride != 0) {
++        task_first.reserve(probe.tasks);
++        u32 total{};
++        for (u32 task = 0; task < probe.tasks; ++task) {
++            task_first.push_back(total);
++            total += span_word(probe.payload_copy, probe.payload_bytes, u64{task} * probe.payload_stride + 1);
++        }
++    }
+     for (u32 group = 0; group < groups; ++group) {
+         const u64 block{base + u64{group} * probe.block_words};
+         const u64 index_base{block + u64{probe.max_vertices} * probe.vertex_lines};
+         const u64 bad_before{bad_index};
++        u64 group_spikes{}, group_triangles{};
++        std::string first_spike;
+         for (u32 primitive = 0; primitive < probe.max_primitives; ++primitive) {
+             const std::array<u32, 3> indices{word(index_base + primitive * 3),
+                                              word(index_base + primitive * 3 + 1),
+@@ -373,6 +390,36 @@
+                 }
+                 sample += " |";
+             }
++            if (!any_nan) {
++                ++group_triangles;
++                std::array<std::array<f32, 4>, 3> corners;
++                bool front{true};
++                for (u32 corner = 0; corner < 3; ++corner) {
++                    corners[corner] = position(block, indices[corner]);
++                    front &= corners[corner][3] > 0.0f;
++                }
++                if (front) {
++                    f32 x0{1e30f}, x1{-1e30f}, y0{1e30f}, y1{-1e30f};
++                    for (const auto& p : corners) {
++                        x0 = (std::min)(x0, p[0] / p[3]);
++                        x1 = (std::max)(x1, p[0] / p[3]);
++                        y0 = (std::min)(y0, p[1] / p[3]);
++                        y1 = (std::max)(y1, p[1] / p[3]);
++                    }
++                    if (x1 - x0 > 1.0f || y1 - y0 > 1.0f) {
++                        ++spikes;
++                        ++group_spikes;
++                        if (first_spike.empty()) {
++                            first_spike = fmt::format(
++                                "p{} v({},{},{}) ndc({:.3g},{:.3g})({:.3g},{:.3g})({:.3g},{:.3g}) w({:.3g},{:.3g},{:.3g})",
++                                primitive, indices[0], indices[1], indices[2], corners[0][0] / corners[0][3],
++                                corners[0][1] / corners[0][3], corners[1][0] / corners[1][3],
++                                corners[1][1] / corners[1][3], corners[2][0] / corners[2][3],
++                                corners[2][1] / corners[2][3], corners[0][3], corners[1][3], corners[2][3]);
++                        }
++                    }
++                }
++            }
+             if (any_nan) {
+                 ++nan;
+             } else if (all_behind) {
+@@ -386,6 +433,24 @@
+             }
+         }
+         bad_groups += bad_index != bad_before ? 1 : 0;
++        if (group_spikes != 0) {
++            ++spike_groups;
++            if (spike_groups <= 8) {
++                spike_detail += fmt::format(" | g{} spikes {}/{} {}", group, group_spikes, group_triangles,
++                                            first_spike);
++                if (!task_first.empty()) {
++                    const auto next{std::upper_bound(task_first.begin(), task_first.end(), group)};
++                    const u32 task{static_cast<u32>(std::distance(task_first.begin(), next)) - 1U};
++                    const u64 at{u64{task} * probe.payload_stride};
++                    spike_detail += fmt::format(" task {} local {}/{} payload", task, group - task_first[task],
++                                                span_word(probe.payload_copy, probe.payload_bytes, at + 1));
++                    for (u32 index = 0; index < (std::min)(probe.payload_stride, 24U); ++index) {
++                        spike_detail += fmt::format(" {:x}", span_word(probe.payload_copy, probe.payload_bytes,
++                                                                       at + index));
++                    }
++                }
++            }
++        }
+     }
+     // 0.5: raw words of decoded group 0, the first 8 primitives' indices and 2 vertices' positions.
+     std::string raw;
+@@ -436,6 +501,9 @@
+                                                dispatched, payload)};
+     std::fputs(payload_line.c_str(), stderr);
+     std::fputs(line.c_str(), stderr);
++    const std::string spike_line{fmt::format("EDEN_TASK_SPIKES n={} groups={} spike_groups={} spikes={}{}\n",
++                                             task_probe.number, groups, spike_groups, spikes, spike_detail)};
++    std::fputs(spike_line.c_str(), stderr);
+     for (StagingBufferRef* const ref : {&task_probe.args_copy, &task_probe.output_copy, &task_probe.payload_copy}) {
+         staging_pool.FreeDeferred(*ref, true);
+     }

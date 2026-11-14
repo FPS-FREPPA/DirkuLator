@@ -12,6 +12,10 @@
 #include "video_core/buffer_cache/readback_statistics.h"
 #endif
 namespace Eden::Performance {
+namespace {
+// Runtime reports of a session, one every 5 s (DirkuLator 0.5.17: 240, was 36).
+constexpr unsigned kRuntimeReports = 240;
+} // namespace
 ProfilingSession::ProfilingSession() : initial_deadline{NowNs() + 180'000'000'000LL} {}
 ProfilingSession::~ProfilingSession() { Stop(); }
 void ProfilingSession::Stop() {
@@ -52,7 +56,9 @@ void ProfilingSession::Tick() {
         Vulkan::NativeGpuProfile::enabled.store(false, std::memory_order_relaxed);
         detailed_until_ns.store(0, std::memory_order_relaxed);
     }
-    if (reports < 36) {
+    // DirkuLator 0.5.17: 240 reports (20 minutes at one every 5 s), was 36 (3 minutes): the first
+    // three minutes are the title and loading, so gameplay was never measured.
+    if (reports < kRuntimeReports) {
 #ifdef EDEN_NX2_PS5_PROTO
         VideoCommon::ReadbackStatistics::enabled.store(true, std::memory_order_relaxed);
 #endif
@@ -70,7 +76,7 @@ void ProfilingSession::Tick() {
             Tegra::NativeDrawIndirect::Report();
             VideoCommon::ReadbackStatistics::Report(now);
 #endif
-            if (++reports == 36) {
+            if (++reports == kRuntimeReports) {
 #ifdef EDEN_NX2_PS5_PROTO
                 VideoCommon::ReadbackStatistics::enabled.store(false, std::memory_order_relaxed);
 #endif

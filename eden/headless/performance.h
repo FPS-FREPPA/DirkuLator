@@ -221,6 +221,10 @@ inline std::atomic<bool> cpu_write_defer{false};
 #else
 inline std::atomic<bool> cpu_write_defer{true};
 #endif
+// DirkuLator 0.5.6: deferral is on for every session (the .025 ordering fix applies deferred
+// writes before a GPU download), unless dev-settings cpu_write_defer=off. OoT: guest CPU-write
+// callbacks took ~28% of wall time (NX2_GPU_PERF guest_write_ns) waiting for the GPU thread's locks.
+inline bool cpu_write_defer_forced_off{false};
 // Replaying on the GPU thread must apply notifications, never enqueue them again.
 inline thread_local bool replaying_cpu_writes = false;
 struct CpuWriteReplay {

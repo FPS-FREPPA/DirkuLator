@@ -5,7 +5,7 @@
   tools/install-ftp.py HOST APP_DIR [--port 2121]
 
 Needs a running FTP server on the console (for example the Payload SDK's ftpsrv) and
-ProsperoEden closed. Every file goes to /data/homebrew/PPSA99862 under a temporary name and is
+DirkuLator closed. Every file goes to /data/homebrew/PPSA99862 under a temporary name and is
 renamed into place once complete. Executables are read back and compared when the server offers
 raw SELF transfers. Files already on the console that the package does not contain (your
 settings, saves and logs live elsewhere) are left alone.

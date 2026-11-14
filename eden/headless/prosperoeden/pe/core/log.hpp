@@ -1,4 +1,4 @@
-// ProsperoEden - Launcher log lines (stderr; the app's log pipe stores them).
+// DirkuLator - Launcher log lines (stderr; the app's log pipe stores them).
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -17,7 +17,7 @@ inline void log(const char *format, ...)
 {
     std::va_list arguments;
     va_start(arguments, format);
-    std::fputs("[ProsperoEden] launcher: ", stderr);
+    std::fputs("[DirkuLator] launcher: ", stderr);
     std::vfprintf(stderr, format, arguments);
     std::fputc('\n', stderr);
     va_end(arguments);

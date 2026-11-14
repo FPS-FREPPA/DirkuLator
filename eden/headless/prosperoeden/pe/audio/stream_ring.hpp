@@ -1,4 +1,4 @@
-// ProsperoEden - Lock-free ring of stereo float frames (one producer, one consumer).
+// DirkuLator - Lock-free ring of stereo float frames (one producer, one consumer).
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

@@ -1317,8 +1317,8 @@ static void CheckLinks() {
     std::puts("Linked loops PASS: block link, call/return and indirect branch without per-iteration lookups");
 }
 
-extern "C" bool eden_fcmp_adc, eden_light_dmb, eden_checkbit_flags;  // headless/dynarmic/fast_paths.cmake
-extern "C" unsigned long long eden_dmb_dropped, eden_checkbit_fused;
+extern "C" bool eden_fcmp_adc, eden_light_dmb, eden_checkbit_flags, eden_cond_flags;  // headless/dynarmic/fast_paths.cmake
+extern "C" unsigned long long eden_dmb_dropped, eden_checkbit_fused, eden_cond_fused;
 
 // FCMP flags, DMB variants and CBZ/CBNZ/TBZ/TBNZ with each fast path on and off (fast_paths.cmake).
 static void CheckFastPaths() {
@@ -1403,7 +1403,45 @@ static void CheckFastPaths() {
         require(on ? eden_checkbit_fused - fused >= 16 : eden_checkbit_fused == fused);
     }
     eden_checkbit_flags = true;
-    std::printf("Fast paths PASS: %u cases (FCMP flags, DMB variants, CBZ/TBZ terminals)\n", cases);
+    // CMP X0,X2; B.<cond> to 0x1010; X1 = 2 when taken, 1 otherwise; every condition, NZCV edge cases.
+    const auto cond_taken = [](uint64_t a, uint64_t b, unsigned cond) {
+        const uint64_t r = a - b;
+        const bool n = r >> 63, z = r == 0, c = a >= b, v = ((a ^ b) & (a ^ r)) >> 63;
+        bool t = false;
+        switch (cond >> 1) {
+        case 0: t = z; break;
+        case 1: t = c; break;
+        case 2: t = n; break;
+        case 3: t = v; break;
+        case 4: t = c && !z; break;
+        case 5: t = n == v; break;
+        case 6: t = !z && n == v; break;
+        default: t = true; break;
+        }
+        return (cond & 1) && cond != 15 ? !t : t;
+    };
+    const std::pair<uint64_t, uint64_t> operands[] = {{5, 5}, {5, 7}, {7, 5}, {~0ULL, 1}, {1ULL << 63, 1}, {1, 1ULL << 63}};
+    for (const bool on : {true, false}) {
+        eden_cond_flags = on;
+        const auto fused = eden_cond_fused;
+        for (unsigned cond = 0; cond < 14; ++cond) {
+            for (const auto& operand : operands) {
+                const uint64_t a = operand.first, b = operand.second;
+                const auto [nzcv, x1] = run({{0x1000, 0xeb02001fu}, {0x1004, 0x54000060u | cond}, {0x1008, 0xd2800021u},
+                                             {0x100c, 0xd4000001u}, {0x1010, 0xd2800041u}, {0x1014, 0xd4000001u}},
+                                            [&](A64::Jit& jit) {
+                                                jit.SetRegister(0, a);
+                                                jit.SetRegister(2, b);
+                                                jit.SetPstate(0);
+                                            });
+                require(x1 == (cond_taken(a, b, cond) ? 2u : 1u));
+                ++cases;
+            }
+        }
+        require(on ? eden_cond_fused - fused >= 14 : eden_cond_fused == fused);
+    }
+    eden_cond_flags = true;
+    std::printf("Fast paths PASS: %u cases (FCMP flags, DMB variants, CBZ/TBZ terminals, B.cond terminals)\n", cases);
 }
 
 // Eden's large tables (src/memory_pages.cpp): zero wherever nothing was written, memory only for

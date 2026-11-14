@@ -1,4 +1,4 @@
-// ProsperoEden - MihawkGen neural frame generation wrapper.
+// DirkuLator - MihawkGen neural frame generation wrapper.
 // Adapts PS5_MihawkGen's C API (framegen.h) to Eden's Vulkan present path.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later

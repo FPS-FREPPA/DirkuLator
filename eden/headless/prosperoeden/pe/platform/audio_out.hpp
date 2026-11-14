@@ -1,4 +1,4 @@
-// ProsperoEden - Audio output thread through sceAudioOut.
+// DirkuLator - Audio output thread through sceAudioOut.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

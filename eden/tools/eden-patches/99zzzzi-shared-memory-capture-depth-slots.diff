@@ -1,0 +1,277 @@
+Build 026, from the 025 console runs:
+- EDEN_NX2_UNIFIED_MEMORY (/data/eden-nx2/unified-memory.txt): images, device-local and upload buffers
+  take the device-local host-visible memory types. VMA keeps 64 MiB blocks per memory type; at the 025
+  crashes the device-local-only type held 460-970 MiB free inside its blocks while an upload buffer
+  (another type) found the pool empty. Off by default; images and buffers fall back to their usual
+  types when the shared ones do not suit them.
+- Frame capture: /data/eden-nx2/capture-now.txt, created while the game runs, writes the 2D images
+  drawn during the next frame to logs/capture/ (unswizzled, with an index), then deletes the file.
+- EDEN_DEPTH_MODE: how many pipelines use -1..1 clip depth, and whether the driver converts it.
+- The native shader key log names the program's slot (task/mesh/vertex/pixel/...), so reject-shaders.txt
+  can skip one mesh program at a time.
+
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -5,6 +5,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <chrono>
+ #include <cstddef>
+ #include <fstream>
+@@ -186,6 +187,19 @@
+     const Shader::Stage stage{program.stage};
+     const bool has_geometry{key.unique_hashes[4] != 0 && !programs[4].is_geometry_passthrough};
+     const bool gl_ndc{key.state.ndc_minus_one_to_one != 0};
++    if (stage == Shader::Stage::VertexB || stage == Shader::Stage::Mesh) {
++        // Which clip-space depth the game's pipelines use, and who converts -1..1 to 0..1 (the
++        // driver through VK_EXT_depth_clip_control, or the shader): fog, shadows and lighting
++        // rebuilt from depth all go wrong if neither or both do. 1st, 2nd, 4th ... pipeline.
++        // Pipelines are built on worker threads.
++        static std::atomic<u64> pipelines{}, minus_one{};
++        const u64 minus = minus_one.fetch_add(gl_ndc ? 1 : 0, std::memory_order_relaxed) + (gl_ndc ? 1 : 0);
++        const u64 count = pipelines.fetch_add(1, std::memory_order_relaxed) + 1;
++        if ((count & (count - 1)) == 0) {
++            LOG_INFO(Render_Vulkan, "EDEN_DEPTH_MODE pipelines={} minus_one_to_one={} native_ndc={}",
++                     count, minus, device.IsExtDepthClipControlSupported());
++        }
++    }
+     const float point_size{std::bit_cast<float>(key.state.point_size)};
+     switch (stage) {
+     case Shader::Stage::VertexB:
+diff --git a/src/video_core/shader_environment.cpp b/src/video_core/shader_environment.cpp
+--- a/src/video_core/shader_environment.cpp
++++ b/src/video_core/shader_environment.cpp
+@@ -52,6 +52,10 @@
+ 
+ using Maxwell = Tegra::Engines::Maxwell3D::Regs;
+ 
++// The slot of the native program being lowered, for its key log line: reject-shaders.txt can then
++// skip one task or mesh program at a time (the mesh emulation's misplaced vertices).
++thread_local const char* native_program_slot = "compute";
++
+ static u64 MakeCbufKey(u32 index, u32 offset) {
+     return (static_cast<u64>(index) << 32) | offset;
+ }
+@@ -691,9 +695,9 @@
+     cached_highest = static_cast<u32>((code.size() - 1) * sizeof(u64));
+     // The key is what /data/eden-nx2/reject-shaders.txt names (EDEN_NATIVE_REJECT_KEYS) to skip one
+     // shader on the next run, which tells which shader causes a visual defect.
+-    LOG_INFO(Shader, "Lowered native shader at {:#x}: key={:016x}, {} source bytes, {} instructions",
++    LOG_INFO(Shader, "Lowered native shader at {:#x}: key={:016x}, {} source bytes, {} instructions, slot={}",
+              program_base, Shader::Ampere::NativeProgramKey(native), native_source_size,
+-             lowered.instructions.size());
++             lowered.instructions.size(), native_program_slot);
+     // Opt-in draw trace: lets the rasterizer tell which key the program at this address has.
+     VideoCommon::NativeDrawTrace::RecordProgram(program_base, Shader::Ampere::NativeProgramKey(native));
+ }
+@@ -752,6 +756,16 @@
+             stage_index = program == Maxwell::ShaderType::Pixel ? 4 : 0;
+             break;
+         }
++        // With a task program the task is in the vertex slot and its mesh program in the
++        // tessellation one; without, the mesh program is in the vertex slot.
++        native_program_slot = mesh_slot ? (program == Maxwell::ShaderType::Tessellation ? "mesh" : "task-or-mesh")
++                              : program == Maxwell::ShaderType::Pixel    ? "pixel"
++                              : program == Maxwell::ShaderType::Geometry ? "geometry"
++                              : program == Maxwell::ShaderType::VertexB  ? "vertex"
++                                                                         : "tessellation";
++        struct SlotReset {
++            ~SlotReset() { native_program_slot = "compute"; } // also when the program is rejected
++        } slot_reset;
+         InitializeNativeCode();
+     }
+     gp_passthrough_mask = maxwell3d->regs.post_vtg_shader_attrib_skip_mask;
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -13,7 +13,10 @@
+ #include <thread>
+ #include <algorithm>
+ #include <chrono>
++#include <cstdio>
+ #include <cstdlib>
++#include <filesystem>
++#include <fstream>
+ #include <limits>
+ #include <map>
+ #include <unordered_map>
+@@ -469,6 +472,74 @@
+         gc_deletes = gc_costly_deletes = gc_download_deletes = async_decodes_queued = 0;
+         images_created = images_deleted = 0;
+     }
++    // Frame capture: once EDEN_NX2_CAPTURE_REQUEST (/data/eden-nx2/capture-now.txt) appears, the 2D
++    // images the GPU drew into during this frame (the scene's colour and depth targets, the
++    // post-processing passes and the image presented) are written, unswizzled, to a numbered
++    // folder of EDEN_NX2_CAPTURE_DIR in the order they were last drawn, and the request file is
++    // deleted, so a new one asks for another capture. This tells which pass first goes wrong
++    // (an overexposed scene target, or a correct one that post-processing brightens).
++    static u64 last_frame_modification{};
++    static const char* const capture_request = std::getenv("EDEN_NX2_CAPTURE_REQUEST");
++    static const char* const capture_dir = std::getenv("EDEN_NX2_CAPTURE_DIR");
++    static u64 capture_polls{};
++    std::error_code capture_error;
++    if (capture_request && capture_dir && capture_polls++ % 30 == 0 &&
++        std::filesystem::remove(capture_request, capture_error)) {
++        static unsigned captures{};
++        const std::filesystem::path folder =
++            std::filesystem::path{capture_dir} / fmt::format("capture-{:02}-frame-{}", captures++, frame_tick);
++        std::filesystem::create_directories(folder, capture_error);
++        std::vector<ImageId> drawn;
++        for (const auto [image_id, image] : slot_images) {
++            const auto& info = image->info;
++            if (image->modification_tick <= last_frame_modification || info.type != ImageType::e2D ||
++                info.num_samples != 1 || info.size.width < 256 || info.size.height < 128 ||
++                True(image->flags & (ImageFlagBits::Unbacked | ImageFlagBits::IsDecoding)) ||
++                !image->unswizzled_size_bytes || image->unswizzled_size_bytes > 64_MiB) {
++                continue;
++            }
++            drawn.push_back(image_id);
++        }
++        std::ranges::sort(drawn, [this](ImageId lhs, ImageId rhs) {
++            return slot_images[lhs].modification_tick < slot_images[rhs].modification_tick;
++        });
++        if (drawn.size() > 48) {
++            drawn.erase(drawn.begin(), drawn.end() - 48); // the last 48 drawn
++        }
++        std::ofstream index(folder / "index.txt");
++        index << "# order gpu_addr pixel_format width height layers levels bytes level0_offset "
++                 "row_length image_height modification_tick flags\n";
++        unsigned order{};
++        for (const ImageId image_id : drawn) {
++            Image& image = slot_images[image_id];
++            const auto& info = image.info;
++            // One image at a time: the pool has little room, and each staging buffer goes again.
++            auto map = runtime.DownloadStagingBuffer(image.unswizzled_size_bytes);
++            const auto copies = FixSmallVectorADL(FullDownloadCopies(info));
++            image.DownloadMemory(map, copies);
++            runtime.Finish();
++            const std::string name = fmt::format("{:02}-{:x}-f{}-{}x{}.raw", order, image.gpu_addr,
++                                                 static_cast<u32>(info.format), info.size.width,
++                                                 info.size.height);
++            std::ofstream raw(folder / name, std::ios::binary);
++            raw.write(reinterpret_cast<const char*>(map.mapped_span.data()),
++                      static_cast<std::streamsize>(image.unswizzled_size_bytes));
++            const auto& first = copies.front();
++            index << order << ' ' << fmt::format("{:#x}", image.gpu_addr) << ' '
++                  << static_cast<u32>(info.format) << ' ' << info.size.width << ' ' << info.size.height
++                  << ' ' << info.resources.layers << ' ' << info.resources.levels << ' '
++                  << image.unswizzled_size_bytes << ' ' << first.buffer_offset << ' '
++                  << first.buffer_row_length << ' ' << first.buffer_image_height << ' '
++                  << image.modification_tick << ' ' << fmt::format("{:#x}", static_cast<u32>(image.flags))
++                  << ' ' << name << '\n';
++            ++order;
++        }
++        LOG_WARNING(HW_GPU, "EDEN_FRAME_CAPTURE frame={} images={} folder={}", frame_tick, order,
++                    folder.string());
++        std::fprintf(stderr, "EDEN_FRAME_CAPTURE frame=%llu images=%u folder=%s\n",
++                     static_cast<unsigned long long>(frame_tick), order, folder.string().c_str());
++    }
++    last_frame_modification = modification_tick;
+     if (decode_memory_refused.exchange(false, std::memory_order_relaxed)) {
+         reclaim_requested = true;
+     }
+diff --git a/src/video_core/vulkan_common/vulkan_memory_allocator.cpp b/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
+--- a/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
++++ b/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
+@@ -7,6 +7,7 @@
+ #include <algorithm>
+ #include <array>
+ #include <bit>
++#include <cstdlib>
+ #include <limits>
+ #include <optional>
+ #include <type_traits>
+@@ -85,6 +86,50 @@
+         }
+         return VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+     }
++
++    // EDEN_NX2_UNIFIED_MEMORY (/data/eden-nx2/unified-memory.txt): images, device-local buffers and
++    // upload buffers all take the memory types that are device local and host visible. On the
++    // console every allocation is one pool the CPU maps as well, but VMA keeps a separate set of
++    // 64 MiB blocks per memory type: in the 025 runs the device-local-only type held 460-970 MiB
++    // free inside its blocks when an upload buffer (another type) found the pool empty. Sharing
++    // one type lets each kind of allocation use the room another left. 0: the switch is off, or no
++    // such type exists, and every allocation keeps its usual types.
++    [[nodiscard]] u32 UnifiedMemoryTypes(const VkPhysicalDeviceMemoryProperties& properties) {
++        static const bool on = std::getenv("EDEN_NX2_UNIFIED_MEMORY") != nullptr;
++        if (!on) {
++            return 0;
++        }
++        constexpr VkMemoryPropertyFlags wanted = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
++                                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
++                                                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
++        constexpr VkMemoryPropertyFlags unwanted = VK_MEMORY_PROPERTY_HOST_CACHED_BIT |
++                                                   VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT |
++                                                   VK_MEMORY_PROPERTY_PROTECTED_BIT;
++        u32 types = 0;
++        for (u32 type = 0; type < properties.memoryTypeCount; ++type) {
++            const VkMemoryPropertyFlags flags = properties.memoryTypes[type].propertyFlags;
++            if ((flags & wanted) == wanted && (flags & unwanted) == 0) {
++                types |= 1u << type;
++            }
++        }
++        static const bool logged = [types] {
++            LOG_WARNING(Render_Vulkan, "EDEN_UNIFIED_MEMORY memory types {:#x}", types);
++            return true;
++        }();
++        (void)logged;
++        return types;
++    }
++
++    // A buffer's memory types under EDEN_NX2_UNIFIED_MEMORY: device-local and upload buffers take
++    // the shared ones; readbacks keep their cached types.
++    [[nodiscard]] u32 SharedTypes(MemoryUsage usage, u32 valid,
++                                  const VkPhysicalDeviceMemoryProperties& properties) {
++        if (usage != MemoryUsage::DeviceLocal && usage != MemoryUsage::Upload) {
++            return valid;
++        }
++        const u32 shared = UnifiedMemoryTypes(properties) & valid;
++        return shared != 0 ? shared : valid;
++    }
+ } // namespace
+ 
+ //MemoryCommit is now VMA-backed
+@@ -215,7 +260,7 @@
+             .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+             .requiredFlags = 0,
+             .preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+-            .memoryTypeBits = 0,
++            .memoryTypeBits = UnifiedMemoryTypes(properties),
+             .pool = VK_NULL_HANDLE,
+             .pUserData = nullptr,
+             .priority = 0.f,
+@@ -231,6 +276,12 @@
+     const bool huge = texels > (u64{1} << 28);
+     VkResult result = huge ? VK_ERROR_OUT_OF_DEVICE_MEMORY
+                            : vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
++    if (result != VK_SUCCESS && !huge && alloc_ci.memoryTypeBits != 0) {
++        // The shared memory types do not suit this image, or have no room: its usual types.
++        VmaAllocationCreateInfo usual = alloc_ci;
++        usual.memoryTypeBits = 0;
++        result = vmaCreateImage(allocator, &ci, &usual, &handle, &allocation, &alloc_info);
++    }
+     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {
+         // Over the device memory budget (Switch 2 titles fill 8 GB cards): let the driver page
+         // it out rather than failing the draw and aborting.
+@@ -296,7 +347,7 @@
+         .usage = MemoryUsageVma(usage),
+         .requiredFlags = 0,
+         .preferredFlags = MemoryUsagePreferredVmaFlags(usage) | anv_flags,
+-        .memoryTypeBits = usage == MemoryUsage::Stream ? 0u : valid_memory_types,
++        .memoryTypeBits = usage == MemoryUsage::Stream ? 0u : SharedTypes(usage, valid_memory_types, properties),
+         .pool = VK_NULL_HANDLE,
+         .pUserData = nullptr,
+         .priority = 0.f,
+@@ -363,7 +414,7 @@
+         device.GetDriverID() == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA) {
+         anv_flags = VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+     }
+-    u32 memory_type_bits = valid_memory_types;
++    u32 memory_type_bits = SharedTypes(usage, valid_memory_types, properties);
+     if (usage == MemoryUsage::Stream) {
+         memory_type_bits = 0u;
+     }

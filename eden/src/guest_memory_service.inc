@@ -27,6 +27,29 @@ enum : std::uint8_t { SlotZero = 0, SlotOwn = 1, SlotShared = 2, SlotFine = 3, S
 constexpr std::size_t FinePage = 16384, FinePages = SparseSlot / FinePage;
 // A written slot becomes Fine with at least this many pages of zeroes (512 KiB given back).
 constexpr std::size_t FineMinZeroPages = 32;
+// While the pool's largest free block is under PoolShortBytes the scanner passes every 2 s instead of
+// 20 s and a slot becomes Fine with 8 pages of zeroes (128 KiB given back): in 033-035 the game held
+// 5.8-6.6 GiB as whole slots when the pool ran out during an area load, where a pass came every 20 s
+// and the load took ~700 MiB in 3 s. EDEN_NX2_CRAM_FINE_MIN_SHORT (1..128) sets the 8.
+constexpr std::size_t PoolShortBytes = std::size_t{1} << 30;
+std::atomic<std::size_t> fine_min_zero_pages{FineMinZeroPages};
+// Zero pages per Own slot the last pass counted: slots and their zero pages by count (0, 1-7, 8-15,
+// 16-31, 32+), what a lower threshold could give back (EDEN_CRAM_ZEROPAGES).
+std::array<std::atomic<std::uint64_t>, 5> zero_page_slots{}, zero_page_pages{};
+bool PoolShort() noexcept {
+    std::int64_t free_bytes = -1;
+    std::size_t largest = 0;
+    eden_direct_memory_free(&free_bytes, &largest);
+    return largest != static_cast<std::size_t>(-1) && largest < PoolShortBytes;
+}
+std::size_t FineMinShort() noexcept {
+    static const std::size_t value = [] {
+        const char* text = std::getenv("EDEN_NX2_CRAM_FINE_MIN_SHORT");
+        const unsigned long long pages = text != nullptr ? std::strtoull(text, nullptr, 10) : 8;
+        return pages >= 1 && pages <= FinePages ? static_cast<std::size_t>(pages) : std::size_t{8};
+    }();
+    return value;
+}
 // A slot made whole again by a write waits 1, 2, 4 ... 1024 scan passes before it may be Fine again.
 constexpr unsigned FineBackoffMax = 10;
 
@@ -623,7 +646,11 @@ bool ScanFine(SparseRange& range, std::size_t slot) noexcept {
     if (counters.passes.load(std::memory_order_relaxed) < range.fine_after[slot]) return false;
     std::size_t zeros = 0;
     for (std::size_t page = 0; page < FinePages; ++page) zeros += PageZero(at + page * FinePage);
-    if (zeros < FineMinZeroPages) return false;
+    const std::size_t bucket = zeros == 0 ? 0 : zeros < 8 ? 1 : zeros < 16 ? 2 : zeros < 32 ? 3 : 4;
+    zero_page_slots[bucket].fetch_add(1, std::memory_order_relaxed);
+    zero_page_pages[bucket].fetch_add(zeros, std::memory_order_relaxed);
+    const std::size_t min_zero = fine_min_zero_pages.load(std::memory_order_relaxed);
+    if (zeros < min_zero) return false;
     LockSlot(range, slot);
     if (SlotState(range, slot) != SlotOwn) {
         UnlockSlot(range, slot, SlotState(range, slot));
@@ -640,7 +667,7 @@ bool ScanFine(SparseRange& range, std::size_t slot) noexcept {
         counters.returns_scan.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
-    if (zeros >= FineMinZeroPages) {
+    if (zeros >= min_zero) {
         fined = MakeFine(range, slot, zero, FinePages - zeros);
         if (!fined) counters.fine_failures.fetch_add(1, std::memory_order_relaxed);
     }
@@ -729,6 +756,22 @@ void ScanPass(SparseRange& range) noexcept {
     counters.passes.fetch_add(1, std::memory_order_relaxed);
     counters.scan_ns.fetch_add(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now() - start).count()), std::memory_order_relaxed);
+    if (fine_requested.load(std::memory_order_relaxed)) {
+        std::uint64_t slots_by[5], pages_by[5];
+        for (std::size_t i = 0; i < 5; ++i) {
+            slots_by[i] = zero_page_slots[i].exchange(0, std::memory_order_relaxed);
+            pages_by[i] = zero_page_pages[i].exchange(0, std::memory_order_relaxed) * FinePage >> 20;
+        }
+        char line[320];
+        const int length = std::snprintf(line, sizeof(line),
+            "EDEN_CRAM_ZEROPAGES pass=%llu fine_min=%zu slots/zeroMiB: none=%llu 1-7=%llu/%llu 8-15=%llu/%llu "
+            "16-31=%llu/%llu 32+=%llu/%llu\n",
+            (unsigned long long)counters.passes.load(), fine_min_zero_pages.load(std::memory_order_relaxed),
+            (unsigned long long)slots_by[0], (unsigned long long)slots_by[1], (unsigned long long)pages_by[1],
+            (unsigned long long)slots_by[2], (unsigned long long)pages_by[2], (unsigned long long)slots_by[3],
+            (unsigned long long)pages_by[3], (unsigned long long)slots_by[4], (unsigned long long)pages_by[4]);
+        if (length > 0) Report(line);
+    }
 }
 
 void ServiceReport(SparseRange& range, const char* when) noexcept {
@@ -794,9 +837,12 @@ void ScannerLoop(SparseRange* range) {
     std::uint64_t last_failures = 0;
     std::unique_lock lock{scanner_mutex};
     while (!scanner_stop) {
-        scanner_wake.wait_for(lock, std::chrono::seconds(20), [] { return scanner_stop; });
+        const bool short_pool = PoolShort();
+        scanner_wake.wait_for(lock, short_pool ? std::chrono::seconds(2) : std::chrono::seconds(20),
+                              [] { return scanner_stop; });
         if (scanner_stop) break;
         lock.unlock();
+        fine_min_zero_pages.store(PoolShort() ? FineMinShort() : FineMinZeroPages, std::memory_order_relaxed);
         ReportGuestMemoryOomGrowth(last_failures);
         if (scan_requested.load(std::memory_order_relaxed)) ScanPass(*range);
 #ifdef PS5_NATIVE

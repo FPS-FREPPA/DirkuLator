@@ -1,4 +1,4 @@
-// ProsperoEden - Launcher: games on download sources. The Library lists them beside the console's
+// DirkuLator - Launcher: games on download sources. The Library lists them beside the console's
 // own, with the sources that have them; Cross downloads one and starts it once it is there (the
 // download dialog), Square puts it in the download queue, and with several sources the source
 // dialog asks which one first. Settings > Downloads shows the sources and the queue.

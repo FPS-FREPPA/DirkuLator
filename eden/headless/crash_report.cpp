@@ -32,6 +32,8 @@ std::size_t eden_heap_committed(void);
 std::size_t eden_heap_large_held(unsigned* blocks);
 std::size_t eden_heap_last_failure(unsigned* why, std::size_t* count);
 void eden_direct_memory_failure_read(std::int64_t*, std::size_t*) noexcept;
+// The last direct-memory events as text, made without the C library (src/direct_memory.c, 041).
+std::size_t eden_direct_events_format(char* out, std::size_t size, unsigned count) __attribute__((weak));
 #endif
 // The app's code, from the link (tools/unwind.ld).
 extern const char __eden_text_start[];
@@ -152,7 +154,7 @@ struct Text {
     }
 };
 // One report per process: the state above lets a single thread in.
-Text<24 * 1024> report;
+Text<160 * 1024> report; // 041/042: room for the last direct-memory events
 Text<64> report_name;
 Text<300> report_path, note_path;
 Text<80> note;
@@ -341,7 +343,7 @@ void Compose(const Kind* kind, int code, std::uint64_t address, const Registers&
              const Stamp& stamp, bool restart) noexcept {
     auto& t = report;
     t.Clear();
-    t.Put("ProsperoEden crash report\nversion: ");
+    t.Put("DirkuLator crash report\nversion: ");
     t.Put(version);
     t.Put(" (code size 0x");
     t.Hex(CodeEnd() - CodeStart());
@@ -431,6 +433,12 @@ void Compose(const Kind* kind, int code, std::uint64_t address, const Registers&
                 PutHeapRefusalMemory();
             }
             t.Put('\n');
+        }
+        // 041: who took the pool in the last moments (the 1 s samples miss the final burst).
+        if (eden_direct_events_format) {
+            static char events[120 * 1024];
+            eden_direct_events_format(events, sizeof(events), 1000); // 042: 160 left a 117-event gap
+            t.Put(events);
         }
     }
 #endif

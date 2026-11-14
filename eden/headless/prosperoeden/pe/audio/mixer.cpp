@@ -1,4 +1,4 @@
-// ProsperoEden - Real-time stereo mixer (48 kHz, S16 output).
+// DirkuLator - Real-time stereo mixer (48 kHz, S16 output).
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

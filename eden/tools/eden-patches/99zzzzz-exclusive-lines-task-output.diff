@@ -1,0 +1,200 @@
+Build 047:
+- One behaviour change, from Lichii fd9c0133d (#1331): the exclusive monitor keeps each processor's reservation
+  (address and value) in its own 64-byte aligned entry, instead of all six packed into one or two cache lines
+  that guest atomics on any two cores bounced between (x64 backend + interface).
+- Diagnostics only: EDEN_TASK_OUTPUT (per submission with emulated task draws: task workgroups, mesh output words
+  from the arena counter, mesh groups per task) and EDEN_MESH_WARP (whether the emulation's compute pipelines get
+  the guest 32-thread warp).
+
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/exclusive_monitor.cpp b/src/dynarmic/src/dynarmic/backend/x64/exclusive_monitor.cpp
+--- a/src/dynarmic/src/dynarmic/backend/x64/exclusive_monitor.cpp
++++ b/src/dynarmic/src/dynarmic/backend/x64/exclusive_monitor.cpp
+@@ -15,10 +15,10 @@
+ namespace Dynarmic {
+ 
+ ExclusiveMonitor::ExclusiveMonitor(std::size_t processor_count)
+-        : exclusive_addresses(processor_count, INVALID_EXCLUSIVE_ADDRESS), exclusive_values(processor_count) {}
++        : reservations(processor_count) {}
+ 
+ size_t ExclusiveMonitor::GetProcessorCount() const {
+-    return exclusive_addresses.size();
++    return reservations.size();
+ }
+ 
+ void ExclusiveMonitor::Lock() {
+@@ -32,25 +32,27 @@
+ bool ExclusiveMonitor::CheckAndClear(std::size_t processor_id, VAddr address) {
+     const VAddr masked_address = address & RESERVATION_GRANULE_MASK;
+     Lock();
+-    if (exclusive_addresses[processor_id] != masked_address) {
++    if (reservations[processor_id].address != masked_address) {
+         Unlock();
+         return false;
+     }
+-    for (VAddr& other_address : exclusive_addresses)
+-        if (other_address == masked_address)
+-            other_address = INVALID_EXCLUSIVE_ADDRESS;
++    for (Reservation& other : reservations)
++        if (other.address == masked_address)
++            other.address = INVALID_EXCLUSIVE_ADDRESS;
+     return true;
+ }
+ 
+ void ExclusiveMonitor::Clear() {
+     Lock();
+-    std::fill(exclusive_addresses.begin(), exclusive_addresses.end(), INVALID_EXCLUSIVE_ADDRESS);
++    for (Reservation& other : reservations) {
++        other.address = INVALID_EXCLUSIVE_ADDRESS;
++    }
+     Unlock();
+ }
+ 
+ void ExclusiveMonitor::ClearProcessor(size_t processor_id) {
+     Lock();
+-    exclusive_addresses[processor_id] = INVALID_EXCLUSIVE_ADDRESS;
++    reservations[processor_id].address = INVALID_EXCLUSIVE_ADDRESS;
+     Unlock();
+ }
+ 
+diff --git a/src/dynarmic/src/dynarmic/backend/x64/exclusive_monitor_friend.h b/src/dynarmic/src/dynarmic/backend/x64/exclusive_monitor_friend.h
+--- a/src/dynarmic/src/dynarmic/backend/x64/exclusive_monitor_friend.h
++++ b/src/dynarmic/src/dynarmic/backend/x64/exclusive_monitor_friend.h
+@@ -14,15 +14,15 @@
+ }
+ 
+ inline size_t GetExclusiveMonitorProcessorCount(ExclusiveMonitor* monitor) {
+-    return monitor->exclusive_addresses.size();
++    return monitor->reservations.size();
+ }
+ 
+ inline VAddr* GetExclusiveMonitorAddressPointer(ExclusiveMonitor* monitor, size_t index) {
+-    return monitor->exclusive_addresses.data() + index;
++    return &monitor->reservations[index].address;
+ }
+ 
+ inline Vector* GetExclusiveMonitorValuePointer(ExclusiveMonitor* monitor, size_t index) {
+-    return monitor->exclusive_values.data() + index;
++    return &monitor->reservations[index].value;
+ }
+ 
+ }  // namespace Dynarmic
+diff --git a/src/dynarmic/src/dynarmic/interface/exclusive_monitor.h b/src/dynarmic/src/dynarmic/interface/exclusive_monitor.h
+--- a/src/dynarmic/src/dynarmic/interface/exclusive_monitor.h
++++ b/src/dynarmic/src/dynarmic/interface/exclusive_monitor.h
+@@ -38,9 +38,9 @@
+         const VAddr masked_address = address & RESERVATION_GRANULE_MASK;
+ 
+         Lock();
+-        exclusive_addresses[processor_id] = masked_address;
++        reservations[processor_id].address = masked_address;
+         const T value = op();
+-        std::memcpy(exclusive_values[processor_id].data(), &value, sizeof(T));
++        std::memcpy(reservations[processor_id].value.data(), &value, sizeof(T));
+         Unlock();
+         return value;
+     }
+@@ -57,7 +57,7 @@
+         }
+ 
+         T saved_value;
+-        std::memcpy(&saved_value, exclusive_values[processor_id].data(), sizeof(T));
++        std::memcpy(&saved_value, reservations[processor_id].value.data(), sizeof(T));
+         const bool result = op(saved_value);
+ 
+         Unlock();
+@@ -83,8 +83,14 @@
+     static constexpr VAddr RESERVATION_GRANULE_MASK = 0xFFFF'FFFF'FFFF'FFFFull;
+     static constexpr VAddr INVALID_EXCLUSIVE_ADDRESS = 0xDEAD'DEAD'DEAD'DEADull;
+     static constexpr size_t MAX_NUM_CPU_CORES = 6; // Sync with src/core/hardware_properties
+-    boost::container::static_vector<VAddr, MAX_NUM_CPU_CORES> exclusive_addresses;
+-    boost::container::static_vector<Vector, MAX_NUM_CPU_CORES> exclusive_values;
++    /// A processor's reservation. Every exclusive load and store on that processor writes it, so
++    /// each has its own cache line: packed together, all six shared one or two lines, which
++    /// guest atomics on any two cores bounced between them.
++    struct alignas(64) Reservation {
++        VAddr address = INVALID_EXCLUSIVE_ADDRESS;
++        Vector value{};
++    };
++    boost::container::static_vector<Reservation, MAX_NUM_CPU_CORES> reservations;
+     SpinLock lock;
+ };
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include "shader_recompiler/frontend/ampere/program_capture.h"
+ #include <algorithm>
++#include <cstdio>
+ #include <cstring>
+ #include <cstdlib>
+ #include <fstream>
+@@ -1377,6 +1378,14 @@
+                                               info->uses_quad_shuffles || info->uses_fswzadd)};
+             const bool force_warp_size{uses_warp_ops && device.IsExtSubgroupSizeControlSupported() &&
+                                        device.IsGuestWarpSizeSupported(VK_SHADER_STAGE_COMPUTE_BIT)};
++            static std::atomic<u32> warp_reports{}; // 047: EDEN_MESH_WARP
++            if (warp_reports.fetch_add(1, std::memory_order_relaxed) < 64) {
++                std::fprintf(stderr, "EDEN_MESH_WARP warp_ops=%d force=%d size_control=%d guest_warp_ok=%d vote=%d\n",
++                             uses_warp_ops ? 1 : 0, force_warp_size ? 1 : 0,
++                             device.IsExtSubgroupSizeControlSupported() ? 1 : 0,
++                             device.IsGuestWarpSizeSupported(VK_SHADER_STAGE_COMPUTE_BIT) ? 1 : 0,
++                             info && info->uses_subgroup_vote ? 1 : 0);
++            }
+             return device.GetLogical().CreateComputePipeline(
+                 VkComputePipelineCreateInfo{
+                     .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -246,6 +246,25 @@
+         u32 words;
+         std::memcpy(&words, arena.counter.Mapped().data(), sizeof(words));
+         const u64 needed{u64{words} * 4};
++        if (arena.task_draws != 0) {
++            // 047: the mesh output the submission's task programs asked for.
++            static u64 task_reports{};
++            if (++task_reports <= 32 || task_reports % 64 == 0) {
++                const u64 block{(std::max)(arena.block_words / arena.task_draws, u64{1})};
++                const u64 mesh_groups{u64{words} / block};
++                std::fprintf(stderr,
++                             "EDEN_TASK_OUTPUT n=%llu draws=%llu task_groups=%llu words=%u block_words=%llu "
++                             "mesh_groups=%llu per_task=%.3f arena_words=%llu\n",
++                             static_cast<unsigned long long>(task_reports),
++                             static_cast<unsigned long long>(arena.task_draws),
++                             static_cast<unsigned long long>(arena.task_groups), words,
++                             static_cast<unsigned long long>(block),
++                             static_cast<unsigned long long>(mesh_groups),
++                             arena.task_groups ? static_cast<double>(mesh_groups) / arena.task_groups : 0.0,
++                             static_cast<unsigned long long>(arena.size / 4));
++            }
++        }
++        arena.task_draws = arena.task_groups = arena.block_words = 0;
+         if (needed > arena.size && mesh_arena_size < max_size) {
+             mesh_arena_size = (std::min)(std::bit_ceil(needed + needed / 4), max_size);
+             LOG_INFO(Render_Vulkan, "Mesh emulation: a submission needed {} MiB of output, arenas "
+@@ -634,6 +653,10 @@
+             const MeshArena& arena{mesh_arenas[mesh_arena_current]};
+             pipeline->SetMeshEmulationTaskBuffers(
+                 payload, offsets, args, {*arena.counter, 0, sizeof(u32)}, capacity_words);
++            MeshArena& counted_arena{mesh_arenas[mesh_arena_current]}; // 047: EDEN_TASK_OUTPUT
++            ++counted_arena.task_draws;
++            counted_arena.task_groups += groups;
++            counted_arena.block_words += block_bytes / 4;
+             mesh_emulation_indirect = {args.buffer, args.offset};
+         }
+         mesh_emulation_groups = groups;
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -263,6 +263,9 @@
+         u64 size{};
+         u64 tick{};
+         bool counted{}; ///< the counter of its last submission was read
++        u64 task_draws{};  ///< 047: emulated task draws of its current submission
++        u64 task_groups{}; ///< 047: their task workgroups
++        u64 block_words{}; ///< 047: sum of their mesh block sizes, in words
+     };
+     std::vector<MeshArena> mesh_arenas;
+     size_t mesh_arena_current{~size_t{}};

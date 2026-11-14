@@ -1,6 +1,6 @@
-// ProsperoEden - Launcher: a newer release of the app. The offer (Update now / What's new / Skip)
+// DirkuLator - Launcher: a newer release of the app. The offer (Update now / What's new / Skip)
 // each time the app opens while one is listed; the release notes in a view of their own; then a
-// ring fills while it downloads and unpacks, and ProsperoEden closes for the update helper to
+// ring fills while it downloads and unpacks, and DirkuLator closes for the update helper to
 // replace its files.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -635,7 +635,7 @@ void Launcher::draw_update(Canvas &c, float open)
             centred(fill_text(tr("Download size: {0}"), megabytes(update_.size)), 606.0f, 30.0f, th().size_small,
                     th().accent_pale);
         centred(tr("Your games, saves and settings are kept."), 640.0f, 28.0f, th().size_small, th().copy);
-        centred(tr("ProsperoEden closes to finish the update."), 668.0f, 28.0f, th().size_small, th().copy);
+        centred(tr("DirkuLator closes to finish the update."), 668.0f, 28.0f, th().size_small, th().copy);
         if (update_.notes.empty())
             buttons({TR("Update now"), TR("Skip")});
         else
@@ -748,7 +748,7 @@ void Launcher::draw_update(Canvas &c, float open)
         list.pop_transform();
 
         centred(tr("Update ready"), 506.0f, 60.0f, th().size_display, th().title);
-        centred(tr("ProsperoEden closes now."), 568.0f, 34.0f, th().size_text, th().value);
+        centred(tr("DirkuLator closes now."), 568.0f, 34.0f, th().size_text, th().value);
         centred(fill_text(tr("Open it again to use version {0}."), update_version_), 602.0f, 30.0f, th().size_small,
                 th().copy);
         // The time until it closes.
@@ -766,7 +766,7 @@ void Launcher::draw_update(Canvas &c, float open)
         list.circle(kCenterX + shake, kRingY + 38.0f, 7.0f, accent);
 
         centred(tr("The update could not finish"), 506.0f, 60.0f, th().size_heading, th().title);
-        centred(tr("ProsperoEden was not changed."), 570.0f, 34.0f, th().size_text, th().value);
+        centred(tr("DirkuLator was not changed."), 570.0f, 34.0f, th().size_text, th().value);
         if (!update_status_.error.empty())
             centred(update_status_.error, 612.0f, 30.0f, th().size_small, th().copy.with_alpha(0.8f));
         buttons({TR("Try again"), TR("Close")});

@@ -64,6 +64,7 @@
 #include "ps5_video_decoder.h"
 #include "cache_budget.h"
 #include "performance.h"
+#include "perf_monitor.h"
 #include "stall_watchdog.h"
 #include "thread_dump.h"
 #include "dev_vulkan.h"
@@ -124,8 +125,8 @@ extern "C" bool eden_free_moves;  // headless/dynarmic/reg_alloc.cmake
 extern "C" bool eden_alloc_r13;  // headless/dynarmic/reg_alloc.cmake
 extern "C" bool eden_plain_ordered_reads;  // headless/CMakeLists.txt
 extern "C" unsigned long long eden_free_moves_done, eden_free_moves_spilled;
-extern "C" bool eden_fcmp_adc, eden_light_dmb, eden_checkbit_flags;  // headless/dynarmic/fast_paths.cmake
-extern "C" unsigned long long eden_dmb_dropped, eden_checkbit_fused;
+extern "C" bool eden_fcmp_adc, eden_light_dmb, eden_checkbit_flags, eden_cond_flags;  // headless/dynarmic/fast_paths.cmake
+extern "C" unsigned long long eden_dmb_dropped, eden_checkbit_fused, eden_cond_fused;
 #endif
 #include "video_core/gpu.h"
 #ifdef EDEN_PS5_FRAMEGEN
@@ -164,7 +165,7 @@ public:
 #ifdef PS5_NATIVE
 // First start with filesystem access: copy what the sandbox kept (settings, covers, Eden's saves
 // and caches) into /data/eden-nx2. Only folders that do not exist yet are filled, and the
-// sandbox copy stays, so an older ProsperoEden still finds its data.
+// sandbox copy stays, so an older DirkuLator still finds its data.
 // dev-settings jit_table_check=on: the JIT's direct page table (headless/jit-page-table.cmake) must
 // hold, for every page, the pointer of Eden's entry, or 0 where the entry is marked or empty. A
 // difference that is still there when read again is a write path that missed the direct table.
@@ -277,6 +278,10 @@ extern "C" void eden_load_step(const char* stage, const char* detail) {
 int main(int argc, char** argv) {
     if (setenv("EDEN_NX2_MME_JIT", "1", 1) != 0 ||
         setenv("EDEN_NX2_SPLIT", "1", 1) != 0) return 2;
+    // Switch files under /data/eden-nx2. On the console /data is reachable only once filesystem
+    // access is granted (below), so they are read after that, with the logs open: before, every
+    // file looked absent and its switch never took effect.
+    const auto read_switches = [] {
     // Shader debugging switches, read once before the first shader (the core reads these variables
     // once). Each native shader the translator rejects is written to logs/rejected-shaders/<key>
     // .source.bin (and .mapped.bin) and the game carries on, so the next blocker can be fixed off
@@ -310,6 +315,136 @@ int main(int argc, char** argv) {
     // shaders logs an NX2_DRAW_TRACE line (counts, topology, indirect arguments, macro parameters,
     // vertex and index buffers and whether the GPU wrote them).
     read_keys("trace-draws.txt", "EDEN_NX2_TRACE_DRAW_KEYS", "EDEN_TRACE_DRAW_KEYS");
+    // /data/eden-nx2/capture-watch.txt: guest image addresses (hex). A frame capture then also writes
+    // sequence.txt (the passes on those images, in order, with view formats and feedback copies) and
+    // up to 12 stage snapshots of them before and after each pass (texture_cache.h, layer 99zzzzm).
+    read_keys("capture-watch.txt", "EDEN_NX2_CAPTURE_WATCH", "EDEN_CAPTURE_WATCH");
+    // Native task/mesh is unreliable on this GPU: those programs always run through compute.
+    // /data/eden-nx2/mesh-draws-off.txt drops those draws instead (layer 99zzzz9).
+    setenv("EDEN_NX2_FORCE_MESH_FALLBACK", "1", 1);
+    if (std::ifstream(std::string{Eden::kDataDir} + "/cpu-pinning-off.txt").good()) {
+        setenv("EDEN_NX2_NO_CPU_PIN", "1", 1);
+        std::fprintf(stderr, "EDEN_NX2_NO_CPU_PIN on\n");
+    }
+    if (std::ifstream(std::string{Eden::kDataDir} + "/mesh-draws-off.txt").good()) {
+        setenv("EDEN_NX2_NO_MESH", "1", 1);
+        std::fprintf(stderr, "EDEN_NX2_NO_MESH on\n");
+    }
+    // task-draws-on.txt: draws with a task program run again (skipped by default since 031,
+    // vk_rasterizer.cpp, layer 99zzzzn: their emulation drew the vertex explosions).
+    if (std::ifstream(std::string{Eden::kDataDir} + "/task-draws-on.txt").good()) {
+        setenv("EDEN_NX2_TASK_DRAWS", "1", 1);
+        std::fprintf(stderr, "EDEN_NX2_TASK_DRAWS on\n");
+    }
+    // idle-flush-off.txt / stall-recovery-off.txt: the GPU thread no longer submits its recorded
+    // work before it waits, or no longer recovers after 2 s without progress (since 032,
+    // gpu_thread.cpp, layer 99zzzzo). For A/B runs against the 031 freeze.
+    if (std::ifstream(std::string{Eden::kDataDir} + "/idle-flush-off.txt").good()) {
+        setenv("EDEN_NX2_IDLE_FLUSH_OFF", "1", 1);
+        std::fprintf(stderr, "EDEN_NX2_IDLE_FLUSH_OFF on\n");
+    }
+    if (std::ifstream(std::string{Eden::kDataDir} + "/stall-recovery-off.txt").good()) {
+        setenv("EDEN_NX2_STALL_RECOVERY_OFF", "1", 1);
+        std::fprintf(stderr, "EDEN_NX2_STALL_RECOVERY_OFF on\n");
+    }
+    // nup-cache-mib.txt (a number, 8..4096): the NUP container's cache of decompressed files.
+    // 64 MiB by default on the console (since 034, layer 99zzzzq): the 512 MiB it could hold was
+    // app heap, never given back, in the pool the guest and graphics share.
+    {
+        std::string mib = "64";
+        if (std::ifstream in{std::string{Eden::kDataDir} + "/nup-cache-mib.txt"}; in) {
+            std::string value;
+            if (in >> value && !value.empty()) mib = value;
+        }
+        setenv("EDEN_NX2_NUP_CACHE_MIB", mib.c_str(), 1);
+        std::fprintf(stderr, "EDEN_NX2_NUP_CACHE_MIB %s\n", mib.c_str());
+    }
+    // memory-drop-off.txt: no EDEN_MEMORY_DROP reports when the pool's largest free block falls
+    // (since 033, texture_cache.h, layer 99zzzzp).
+    if (std::ifstream(std::string{Eden::kDataDir} + "/memory-drop-off.txt").good()) {
+        setenv("EDEN_NX2_MEMORY_DROP_OFF", "1", 1);
+        std::fprintf(stderr, "EDEN_NX2_MEMORY_DROP_OFF on\n");
+    }
+    // vma-block-mib.txt, one number (4..256): VMA's block size for device memory (16 by default
+    // since 031, vulkan_device.cpp, layer 99zzzzn; 64 before).
+    // Since 037 the console defaults to 8 (less free space left inside partly used blocks, which
+    // the guest could use), and the upload stream buffer to 32 MiB (stream-buffer-mib.txt, 8..256;
+    // vk_staging_buffer_pool.cpp, layer 99zzzzs; 128 before).
+    {
+        unsigned long long mib = 8;
+        if (std::ifstream size_file{std::string{Eden::kDataDir} + "/vma-block-mib.txt"}; size_file) {
+            unsigned long long value = 0;
+            if (size_file >> value) mib = value;
+        }
+        setenv("EDEN_NX2_VMA_BLOCK_MIB", std::to_string(mib).c_str(), 1);
+        std::fprintf(stderr, "EDEN_NX2_VMA_BLOCK_MIB %llu\n", mib);
+    }
+    // fiber-stack-kib.txt (128..8192): each guest thread's fiber stack (src/common/fiber.cpp, layer
+    // 99zzzzt): fibers held two 2 MiB arrays each, 664 MiB of committed heap for 168 threads in 038.
+    // 512 KiB on the console since 042: 041 measured the deepest use at 97 KiB (EDEN_FIBER_STACKS),
+    // the guard (layer 99zzzzu) stops the app on an overflow, and Eden's OpenOrbis port runs on 512.
+    {
+        unsigned long long kib = 512;
+        if (std::ifstream size_file{std::string{Eden::kDataDir} + "/fiber-stack-kib.txt"}; size_file) {
+            unsigned long long value = 0;
+            if (size_file >> value) kib = value;
+        }
+        setenv("EDEN_NX2_FIBER_STACK_KIB", std::to_string(kib).c_str(), 1);
+        std::fprintf(stderr, "EDEN_NX2_FIBER_STACK_KIB %llu\n", kib);
+    }
+    {
+        unsigned long long mib = 32;
+        if (std::ifstream size_file{std::string{Eden::kDataDir} + "/stream-buffer-mib.txt"}; size_file) {
+            unsigned long long value = 0;
+            if (size_file >> value) mib = value;
+        }
+        setenv("EDEN_NX2_STREAM_BUFFER_MIB", std::to_string(mib).c_str(), 1);
+        std::fprintf(stderr, "EDEN_NX2_STREAM_BUFFER_MIB %llu\n", mib);
+    }
+    // handle-zero-off.txt: a texture handle that cannot be worked out loses its pipeline again
+    // instead of sampling handle 0 (layer 99zzzze), for an A/B of what the stand-in changes.
+    if (std::ifstream(std::string{Eden::kDataDir} + "/handle-zero-off.txt").good()) {
+        setenv("EDEN_NX2_NO_HANDLE_ZERO", "1", 1);
+        std::fprintf(stderr, "EDEN_NX2_NO_HANDLE_ZERO on\n");
+    }
+    // /data/eden-nx2/unified-memory.txt: images, device-local and upload buffers share the device
+    // local, host visible memory types (vulkan_memory_allocator.cpp, layer 99zzzzi), so one kind of
+    // allocation can use the room another left inside the allocator's blocks.
+    if (std::ifstream(std::string{Eden::kDataDir} + "/unified-memory.txt").good()) {
+        setenv("EDEN_NX2_UNIFIED_MEMORY", "1", 1);
+        std::fprintf(stderr, "EDEN_NX2_UNIFIED_MEMORY on\n");
+    }
+    // /data/eden-nx2/dedicated-image-mib.txt, one number: images of that many MiB or more get their
+    // own memory allocation (vk_texture_cache.cpp MakeImage, layer 99zzzzk; 8 by default, 0 = off).
+    if (std::ifstream size_file{std::string{Eden::kDataDir} + "/dedicated-image-mib.txt"}; size_file) {
+        unsigned long long mib = 0;
+        if (size_file >> mib) {
+            setenv("EDEN_NX2_DEDICATED_IMAGE_MIB", std::to_string(mib).c_str(), 1);
+            std::fprintf(stderr, "EDEN_NX2_DEDICATED_IMAGE_MIB %llu\n", mib);
+        }
+    }
+    // /data/eden-nx2/capture-now.txt, created while the game runs: the images drawn in the next
+    // frame are written to logs/capture/ and the file is deleted (texture_cache.h TickFrame, layer
+    // 99zzzzi). One left from an earlier session would capture the first frame: it goes now.
+    {
+        const std::string request = std::string{Eden::kDataDir} + "/capture-now.txt";
+        const std::string folder = std::string{Eden::kDataDir} + "/logs/capture";
+        std::remove(request.c_str());
+        setenv("EDEN_NX2_CAPTURE_REQUEST", request.c_str(), 1);
+        setenv("EDEN_NX2_CAPTURE_DIR", folder.c_str(), 1);
+        std::fprintf(stderr, "EDEN_FRAME_CAPTURE ready: create %s\n", request.c_str());
+    }
+    // /data/eden-nx2/video-counter-table-off.txt: stop keeping video decoders' counters in the
+    // guest's syncpoint table, for a game that does worse with it (layer 99zzzz6).
+    if (std::ifstream(std::string{Eden::kDataDir} + "/video-counter-table-off.txt").good()) {
+        setenv("EDEN_NX2_VDEC_NO_COUNTER_TABLE", "1", 1);
+        std::fprintf(stderr, "EDEN_NX2_VDEC_NO_COUNTER_TABLE on\n");
+    }
+    std::fprintf(stderr, "EDEN_SWITCHES read from %s\n", Eden::kDataDir);
+    };
+#ifndef PS5_NATIVE
+    read_switches();
+#endif
     try {
         std::FILE* report = stdout;
         SCOPE_EXIT { if (report != stdout) std::fclose(report); };
@@ -323,7 +458,7 @@ int main(int argc, char** argv) {
         Eden::BootTrace::Line("requesting filesystem access");
         // Filesystem access beyond the sandbox, first: every path below depends on it
         // (assets_dir.h). A resident upstream Lapy service gets the first opportunity; otherwise
-        // the packaged exact-title upstream helper is sent to the local elfldr. ProsperoEden
+        // the packaged exact-title upstream helper is sent to the local elfldr. DirkuLator
         // contains no locally implemented kernel mutation code. If neither path works, the app
         // keeps its sandbox paths.
 #if defined(EDEN_DEV_PROFILE)
@@ -379,6 +514,7 @@ int main(int argc, char** argv) {
         Eden::Crash::Install(Eden::LogsDir(), Eden::kAppVersion, last_crash.restarted);
         Eden::BootTrace::Ready(Eden::LogsDir(), Eden::FilesystemAccess());
         Eden::BootTrace::Line("logs and crash handler ready (%s)", Eden::LogsDir().c_str());
+        read_switches();
         for (const char* folder : {"/app0", Eden::kMountedAppDir, Eden::kInstallDir, "/mnt/sandbox/PPSA99862_000/app0"})
             Eden::BootTrace::Line("app folder candidate %s: eboot %s, font %s", folder,
                                   Eden::FileExists(std::string{folder} + "/eboot.bin") ? "yes" : "no",
@@ -477,7 +613,7 @@ int main(int argc, char** argv) {
             const std::string note = Eden::LogFile("stop-limit.txt");
             if (std::remove(note.c_str()) == 0)
                 Eden::Report("exit", "The last game did not stop (or finish loading) within ten seconds of being "
-                                     "asked to, so ProsperoEden started again");
+                                     "asked to, so DirkuLator started again");
             Eden::StopLimit::Start(note);
         }
         report = std::fopen(Eden::LogFile("result.tsv").c_str(), "w");
@@ -541,6 +677,36 @@ int main(int argc, char** argv) {
             if (!path.empty() && Eden::FileExists(path)) forwarded_game = path;
             else launch_error = "Forwarded game not found: " + (path.empty() ? forwarded.rom : path);
             Eden::BootTrace::Line("forwarded game: %s", forwarded_game.empty() ? "not found" : "found");
+        }
+        // One-click start (DirkuLator 0.5.14): opening the app from the PS5 menu starts the last game
+        // played, else the only game in roms, without the launcher; leaving the game opens the
+        // launcher. Not after a crash restart (the launcher shows the report instead of the same
+        // crash again), and not while /data/eden-nx2/launcher-first.txt exists.
+        if (forwarded.rom.empty() && !last_crash.restarted &&
+            !Eden::FileExists(Eden::AppFile("launcher-first.txt"))) {
+            const std::string roms = Eden::AssetsPath("roms");
+            std::string path;
+            if (const std::string last = Eden::LoadLastGame(); !last.empty()) {
+                path = Eden::ResolveForwardedRom(last, roms);
+            }
+            if (path.empty() || !Eden::FileExists(path)) {
+                path.clear();
+                std::error_code rom_error;
+                for (const auto& entry : Eden::ReadNativeDirectory(roms, rom_error)) {
+                    const auto extension = entry.path().extension();
+                    if (extension != ".nsp" && extension != ".xci" && extension != ".nup") continue;
+                    if (!path.empty()) {  // more than one game: the player chooses
+                        path.clear();
+                        break;
+                    }
+                    path = roms + "/" + entry.path().filename().string();
+                }
+            }
+            if (!path.empty()) {
+                forwarded_game = path;
+                const std::string message = "One-click start: " + std::filesystem::path(path).filename().string();
+                Eden::Report("launch", message.c_str());
+            }
         }
         // A game that faulted early in its boot is restarted (at most four times per launch).
         std::string relaunch_game;
@@ -827,7 +993,10 @@ int main(int argc, char** argv) {
             Common::Log::Filter filter;
             filter.SetClassLevel(Common::Log::Class::Service_FS, Common::Log::Level::Info);
 #if defined(PS5_NATIVE) && !defined(EDEN_DEV_PROFILE) && !defined(EDEN_DEV_ROM_ID)
-            if (Eden::LoadPreferences().detailed_logging) filter.ParseFilterString("*:Debug");
+            // OoT polls a socket thousands of times a second: at Debug those lines alone filled the
+            // 100 MiB log in under two minutes, before anything worth reading happened.
+            // Everything at Debug wrote 100 MiB in about four minutes and cost frame time.
+            if (Eden::LoadPreferences().detailed_logging) filter.ParseFilterString("*:Info Service.Audio:Debug");
 #endif
             Common::Log::SetGlobalFilter(filter);
         }
@@ -955,6 +1124,7 @@ int main(int argc, char** argv) {
                 } else if (entry == "cpu_write_defer=off") {
                     // Guest writes wait for a GPU cache lock the GPU thread holds, as upstream (performance.h).
                     Eden::Performance::cpu_write_defer = false;
+                    Eden::Performance::cpu_write_defer_forced_off = true;
                 } else if (entry == "cpu_read_skip=on") {
                     // Guest reads skip the download check while the GPU thread holds the texture cache lock.
                     Eden::Performance::cpu_read_skip = true;
@@ -1021,6 +1191,9 @@ int main(int argc, char** argv) {
                 } else if (entry == "jit_checkbit_flags=off") {
                     // CBZ/TBZ-style terminals reload their condition from the stack, as upstream (headless/dynarmic/fast_paths.cmake).
                     eden_checkbit_flags = false;
+                } else if (entry == "jit_cond_flags=off") {
+                    // B.cond terminals reload NZCV from the JIT state, as upstream (headless/dynarmic/fast_paths.cmake).
+                    eden_cond_flags = false;
                 } else if (entry == "jit_r13=off") {
                     // The JIT allocator skips R13 in every block, as upstream (headless/dynarmic/reg_alloc.cmake).
                     eden_alloc_r13 = false;
@@ -1342,18 +1515,38 @@ int main(int argc, char** argv) {
                 Settings::values.current_gpu_accuracy = Settings::GpuAccuracy::Low;
             }
             if (speed.unsafe_cpu) Settings::values.cpu_accuracy = Settings::CpuAccuracy::Unsafe;
+            // DirkuLator 0.5.7 performance profile (CPU-bound: guest core 0 ~87%, GPU ~25%), for
+            // every session whatever the settings file says: the JIT drops NaN and FP-error
+            // correction (Unsafe) and keeps fastmem (cpuopt_unsafe_host_mmu defaults to false on
+            // this platform, which would turn fastmem off under Unsafe); shaders build in the
+            // background. 0.5.8: the GPU level stays as chosen (High by default) - with Low in 0.5.7
+            // Link's house was heavily overexposed (the game's exposure meter reads GPU results back).
+            // 0.5.11 (user: "accurate and safe at as much fps you can"): the JIT is back to the exact
+            // level chosen (Auto by default: fastmem, no NaN/FP-error shortcuts); Unsafe, when chosen
+            // in the settings, keeps fastmem.
+            Settings::values.cpuopt_unsafe_host_mmu = true;
+            Settings::values.use_asynchronous_shaders = true;
+            Eden::Report("performance", "DirkuLator profile: CPU accuracy as chosen (fastmem kept), async shaders");
             Settings::values.dma_accuracy.SetValue(speed.unsafe_dma ?
                 Settings::DmaAccuracy::Unsafe : Settings::DmaAccuracy::Default);
 #ifdef EDEN_NX2_PS5_PROTO
-            Eden::Performance::cpu_write_defer.store(speed.unsafe_dma, std::memory_order_relaxed);
-            Eden::Report("memory", speed.unsafe_dma ? "Deferred CPU writes enabled (unsafe DMA)" :
-                                                    "Immediate CPU writes enabled (default DMA)");
+            // DirkuLator 0.5.6: deferred CPU writes for every session (performance.h), not only
+            // with unsafe DMA, so guest cores stop waiting for the GPU thread's cache locks.
+            const bool defer_writes = !Eden::Performance::cpu_write_defer_forced_off;
+            Eden::Performance::cpu_write_defer.store(defer_writes, std::memory_order_relaxed);
+            Eden::Report("memory", defer_writes ? "Deferred CPU writes enabled" :
+                                                  "Immediate CPU writes enabled (cpu_write_defer=off)");
 #endif
             Settings::values.use_reactive_flushing.SetValue(speed.reactive_flushing);
             Settings::values.skip_cpu_inner_invalidation.SetValue(speed.skip_invalidation);
             // Settings > Performance > Compact memory: the guest's memory in 16 KiB pages where a
             // written slot is mostly zeroes (src/guest_memory_service.inc), before the session takes it.
             Common::SetGuestMemoryFine(speed.compact_memory || dev_cram_fine);
+            // DirkuLator 0.5.11 ("give the GPU a larger playroom"): compact memory for every session.
+            // OoT at Saria's wave held 6.4 GiB of guest memory, ~3 GiB of it pages of zeroes, while
+            // graphics was refused a 49 MiB block (largest free 42 MiB of 541 MiB free).
+            Common::SetGuestMemoryFine(true);
+            Eden::Report("memory", "Compact guest memory enabled (DirkuLator default)");
             // Settings > Performance > Memory: the memory the guest's console is told it has
             // (Eden's memory layout). A mod that keeps a heap of its own asks the kernel how much
             // memory there is and reserves what it wants from it; on the Switch's own 4 GiB it finds
@@ -1659,7 +1852,7 @@ int main(int argc, char** argv) {
                 };
 #ifdef PS5_NATIVE
                 // While a game loads nothing else reads the controller, so Touchpad + L1 did nothing
-                // until the game ran: a load that hung could only be left by closing ProsperoEden.
+                // until the game ran: a load that hung could only be left by closing DirkuLator.
                 // Now it is heard here too. The stop limit starts at the press (stop_limit.h): a
                 // load that finishes within it ends as a normal stop, one that does not ends with
                 // the app starting again at the launcher.
@@ -1882,14 +2075,22 @@ int main(int argc, char** argv) {
                 // Session commands and diagnostic deadlines must progress even with no HUD.
                 std::jthread runtime_control([&](std::stop_token stop) {
                     Eden::Performance::ProfilingSession profiling;
+                    // DirkuLator 0.5.18: perf-monitor.csv, one line a second (perf_monitor.h).
+                    // After the session, so it is destroyed first and the session's Stop still
+                    // has the last word on the timers.
+                    Eden::PerfMonitor::Monitor perf_monitor;
                     auto next_memory_report = session_start + std::chrono::seconds(10);
                     // With detailed logging, what every guest thread waits on, every 10 s: a game
                     // that stops without an error shows which threads are blocked and where.
-                    const bool thread_dumps = game && Eden::LoadPreferences().detailed_logging;
+                    // DirkuLator 0.5.7: off in the performance profile (each dump walks every
+                    // guest thread, 85 in OoT); crash reports keep their own thread list.
+                    const bool thread_dumps = false;
                     auto next_thread_dump = session_start + std::chrono::seconds(10);
 #ifdef EDEN_NX2_PS5_PROTO
-                    Eden::RuntimeControl commands(Eden::AppFile("split-enable.request"),
-                                                  Eden::AppFile("profile-refresh.request"));
+                    // DirkuLator 0.5.8: the requests sit with the other switches in the data
+                    // folder (FTP-writable while a game runs); /app0 is read-only.
+                    Eden::RuntimeControl commands(std::string{Eden::kDataDir} + "/split-enable.request",
+                                                  std::string{Eden::kDataDir} + "/profile-refresh.request");
 #endif
                     while (!stop.stop_requested()) {
 #ifdef EDEN_NX2_PS5_PROTO
@@ -1898,10 +2099,16 @@ int main(int argc, char** argv) {
                             [&] { profiling.Restart(); });
 #endif
                         profiling.Tick();
+                        perf_monitor.Tick();
                         const auto now = std::chrono::steady_clock::now();
                         if (game && now >= next_memory_report) {
                             Eden::Performance::ReportSessionMemory("play", 0);
-                            next_memory_report = now + std::chrono::seconds(10);
+                            // Every second while the largest free block is under 1 GiB, so the
+                            // last seconds before memory runs out are on record.
+                            next_memory_report = now + (Eden::Performance::graphics_memory_short.load(
+                                                            std::memory_order_relaxed)
+                                                            ? std::chrono::seconds(1)
+                                                            : std::chrono::seconds(10));
                         }
                         if (thread_dumps && now >= next_thread_dump) {
                             Eden::ThreadDump::Dump(system, std::chrono::duration<double>(now - session_start).count());
@@ -2078,9 +2285,11 @@ int main(int argc, char** argv) {
                                                     __atomic_load_n(&eden_free_moves_done, __ATOMIC_RELAXED),
                                                     __atomic_load_n(&eden_free_moves_spilled, __ATOMIC_RELAXED));
                                     if (poll == 0)
-                                        std::printf("EDEN_JIT_FAST_PATHS fcmp_adc=%d light_dmb=%d checkbit_flags=%d dmb_dropped=%llu checkbit_fused=%llu\n", eden_fcmp_adc ? 1 : 0, eden_light_dmb ? 1 : 0, eden_checkbit_flags ? 1 : 0,
+                                        std::printf("EDEN_JIT_FAST_PATHS fcmp_adc=%d light_dmb=%d checkbit_flags=%d cond_flags=%d dmb_dropped=%llu checkbit_fused=%llu cond_fused=%llu\n", eden_fcmp_adc ? 1 : 0, eden_light_dmb ? 1 : 0, eden_checkbit_flags ? 1 : 0,
+                                                    eden_cond_flags ? 1 : 0,
                                                     __atomic_load_n(&eden_dmb_dropped, __ATOMIC_RELAXED),
-                                                    __atomic_load_n(&eden_checkbit_fused, __ATOMIC_RELAXED));
+                                                    __atomic_load_n(&eden_checkbit_fused, __ATOMIC_RELAXED),
+                                                    __atomic_load_n(&eden_cond_fused, __ATOMIC_RELAXED));
                                     lock.lock();
                                 }
 #ifndef EDEN_DEV_VULKAN
@@ -2206,7 +2415,7 @@ int main(int argc, char** argv) {
                 if (!completion->guest_fault.empty()) {
                     if (Eden::HostFiles::Exhausted()) {
                         throw std::runtime_error("The app could not open more game files. Fully close "
-                                                 "EdGlantine PS5 and launch the game again. See the logs for details.");
+                                                 "DirkuLator and launch the game again. See the logs for details.");
                     }
 #ifdef PS5_NATIVE
                     // A game can run its save-load completion before its own callback exists

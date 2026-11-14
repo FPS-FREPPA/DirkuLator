@@ -1,0 +1,191 @@
+The instruction forms that were still rejected when OoT's world loads, as Lichii lowers them: USHF by
+an immediate with a high word, USEL with uniform predicates, REDUX, LEA with a high effective address
+and TLD4 gathers. Bumps the translator salt.
+
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -560,6 +560,7 @@
+             emit(0x5c40000000000000ULL | predicate | target | (u64{250} << 8) |
+                  (u64{251} << 20) | (u64{1} << 41) | (u64{7} << 48));
+         };
++        const u32 guard_slot = 6 - (native_predicate & 7);
+         const u32 high_uniform_base = reserved_register;
+         const auto bindless_general_tex = [&]() -> bool {
+             constexpr std::array<u32, 8> coordinate_count{1, 2, 3, 3, 2, 3, 0, 4};
+@@ -1372,6 +1373,17 @@
+             emit(0x38f0000000070000ULL | (u64{250} << 8) | (u64{1} << (target + 20)));
+             break;
+         }
++        case 0x499: {
++            const u32 target = uniform_register(static_cast<u32>(dest));
++            const u32 shift = uniform_register(insn.Bits(64, 8));
++            if (insn.Bits(24, 8) != 63 || (insn.words[2] & ~0x8ffU) != 0x08010600 ||
++                (insn.words[3] & 0xc00001ffU) || target == ~0U || target == 255 || shift == ~0U)
++                return fail(index, "native uniform immediate high-word shift mode");
++            mov_imm(250, insn.words[1]);
++            emit(0x5c48000000000000ULL | predicate | target | (u64{250} << 8) |
++                 (u64{shift} << 20) | (u64{insn.Bits(75, 1)} << 39));
++            break;
++        }
+         case 0x299: { // USHF by a uniform amount, one register shifted (SHL/SHR, bit 75 wraps).
+             const u32 dst = uniform_register(insn.Bits(16, 8)), low = uniform_register(insn.Bits(24, 8));
+             const u32 shift = uniform_register(insn.Bits(32, 8)), high = uniform_register(insn.Bits(64, 8));
+@@ -1593,29 +1605,44 @@
+             break;
+         }
+         case 0x3c4: { // REDUX.SUM/OR/MIN/MAX.U32 over the actual active lanes.
+-            const u32 source = insn.Bits(24, 8);
+-            if (dest >= 63 || insn.words[1] || (insn.words[2] != 0xc000 && insn.words[2] != 0x4000 && insn.words[2] != 0x10000 && insn.words[2] != 0x14000) || native_predicate != 7)
++            const u32 source = insn.Bits(24, 8), target = uniform_register(static_cast<u32>(dest));
++            const u32 mode = insn.words[2] & ~0x200U;
++            const bool maximum = mode == 0x14000, minimum = mode == 0x10000;
++            const bool signed_order = insn.Bits(73, 1);
++            // OR and XOR: inactive lanes contribute zero, as for the sum. Maxwell LOP: 1 = OR, 2 = XOR.
++            const u32 logical = insn.words[2] == 0x4000 ? 1U : insn.words[2] == 0x8000 ? 2U : 0U;
++            if (target == ~0U || target == 255 || insn.words[1] ||
++                (insn.words[2] != 0xc000 && !maximum && !minimum && !logical) ||
++                (signed_order && !maximum && !minimum) || native_predicate != 7)
+                 return fail(index, "native warp sum mode");
+             emit(0x50d8000000070000ULL | 250 | (u64{7} << 39) | (u64{7} << 45) | (u64{1} << 48));
+-            mov_imm(uniform_register(static_cast<u32>(dest)), insn.words[2] == 0x10000 ? 0xffffffffU : 0U);
++            mov_imm(target, minimum ? ~0U : 0U);
+             for (u32 lane = 0; lane < 32; ++lane) {
+                 emit(0xef10000000070000ULL | 251 | (u64{source} << 8) | (u64{lane} << 20) |
+                     (u64{1} << 28) | (u64{1} << 29) | (u64{31} << 34) | (u64{7} << 48));
++                if (signed_order)
++                    emit(0x0400000000070000ULL | 251 | (u64{251} << 8) |
++                         (u64{0x80000000U} << 20) | (u64{2} << 53));
+                 emit(0x3828000000070000ULL | 252 | (u64{250} << 8) | (u64{lane} << 20));
+                 emit(0x0400000000070000ULL | 252 | (u64{252} << 8) | (u64{1} << 20));
+                 emit(0x5c10000000070000ULL | 252 | (u64{255} << 8) | (u64{252} << 20) | (u64{1} << 48));
+-                emit(0x5c40000000070000ULL | 251 | (u64{251} << 8) | (u64{252} << 20) |
+-                     (insn.words[2] == 0x10000 ? (u64{1} << 40) | (u64{1} << 41) : 0) | (u64{7} << 48));
+-                if (insn.words[2] == 0x4000) {
+-                    emit(0x5c40000000070000ULL | (uniform_register(static_cast<u32>(dest))) | (u64{uniform_register(static_cast<u32>(dest))} << 8) |
+-                         (u64{251} << 20) | (u64{1} << 41) | (u64{7} << 48));
+-                } else if (insn.words[2] == 0x10000 || insn.words[2] == 0x14000) {
+-                    emit(0x5c20000000070000ULL | (uniform_register(static_cast<u32>(dest))) | (u64{uniform_register(static_cast<u32>(dest))} << 8) |
+-                         (u64{251} << 20) | (u64{7} << 39) | (u64{insn.words[2] == 0x14000} << 42));
++                // Inactive lanes: 0, or ~0 for the minimum (OR with the inverted lane mask).
++                emit(0x5c40000000070000ULL | 251 | (u64{251} << 8) | (u64{252} << 20) | (u64{7} << 48) |
++                     (u64{minimum} << 40) | (u64{minimum} << 41));
++                if (minimum) {
++                    emit(0x5c20000000070000ULL | target | (u64{target} << 8) | (u64{251} << 20) | (u64{7} << 39));
++                } else if (maximum) {
++                    emit(0x5c20000000070000ULL | target | (u64{target} << 8) | (u64{251} << 20) | (u64{15} << 39));
++                } else if (logical) {
++                    emit(0x5c40000000070000ULL | target | (u64{target} << 8) | (u64{251} << 20) |
++                        (u64{logical} << 41) | (u64{7} << 48));
+                 } else {
+-                    emit(0x5c10000000070000ULL | (uniform_register(static_cast<u32>(dest))) | (u64{uniform_register(static_cast<u32>(dest))} << 8) | (u64{251} << 20));
++                    emit(0x5c10000000070000ULL | target | (u64{target} << 8) | (u64{251} << 20));
+                 }
+             }
++            if (signed_order)
++                emit(0x0400000000070000ULL | target | (u64{target} << 8) |
++                     (u64{0x80000000U} << 20) | (u64{2} << 53));
+             break;
+         }
+         case 0xf8c: { // ATOMS.POPC.INC.32 with no returned value: one increment per active lane.
+@@ -1960,24 +1987,43 @@
+             const u32 target = uniform_register(static_cast<u32>(dest));
+             const u32 a = uniform_register(insn.Bits(24, 8)), b = opcode == 0x887 ? 252U : uniform_register(insn.Bits(32, 8));
+             if (condition > 6 || target == ~0U || a == ~0U || b == ~0U ||
+-                insn.Bits(12, 4) != 7 || (insn.words[2] & ~0x07800000U) != 0x08000000U)
++                (insn.words[2] & ~0x07800000U) != 0x08000000U)
+                 return fail(index, "native uniform select mode");
+-            if (opcode == 0x887 && index > 0 && insn.words[1] <= 0x7ffff &&
+-                code[index - 1].Bits(0, 12) == 0x88c &&
+-                code[index - 1].Bits(24, 8) == insn.Bits(24, 8) &&
+-                code[index - 1].words[1] == insn.words[1] &&
+-                code[index - 1].words[2] == (0x0bf01070U | (condition << 17)) &&
+-                insn.words[2] == (0x08000000U | (condition << 23))) {
++            // The clamp's UISETP may sit a few instructions back, with only instructions between
++            // that write no uniform state and do not branch (Nintendo Switch Sports' jump tables),
++            // and no branch seen so far landing between them.
++            u32 compare = index;
++            for (u32 back = 1; back <= 8 && back <= index; ++back) {
++                const u32 earlier = code[index - back].Bits(0, 12), datapath = earlier & 0x1ff;
++                if (earlier == 0x88c) {
++                    compare = index - back;
++                    break;
++                }
++                if ((datapath >= 0x080 && datapath <= 0x0bf) || (datapath >= 0x1c2 && datapath <= 0x1c4) ||
++                    (earlier >= 0x940 && earlier <= 0x95f))
++                    break;
++            }
++            const bool target_between = std::any_of(relocations.begin(), relocations.end(),
++                [&](const Relocation& relocation) { return relocation.target > compare && relocation.target <= index; });
++            if (opcode == 0x887 && native_predicate == 7 && compare < index && !target_between &&
++                condition == 0 && insn.words[1] <= 0x7ffff &&
++                code[compare].Bits(12, 4) == 7 && code[compare].Bits(24, 8) == insn.Bits(24, 8) &&
++                code[compare].words[1] == insn.words[1] && code[compare].words[2] == 0x0bf01070 &&
++                insn.words[2] == 0x08000000) {
+                 // Preserve the unsigned clamp idiom for indirect-table analysis.
+                 emit(0x3820000000070000ULL | target | (u64{a} << 8) |
+                      (u64{insn.words[1]} << 20) | (u64{7} << 39));
+                 break;
+             }
+-            if (opcode == 0x887) mov_imm(252, insn.words[1]);
+-            const u32 temporary = 6 - condition, mask = 1U << temporary;
++            if (opcode == 0x887)
++                emit(0x0100000000000000ULL | (u64{7} << 16) | 252 | (u64{15} << 12) |
++                     (u64{insn.words[1]} << 20));
++            const u32 temporary = 6 - condition;
++            const u32 mask = (1U << temporary) | (native_predicate != 7 ? 1U << guard_slot : 0U);
+             emit(0x38e8000000070000ULL | 253 | (u64{255} << 8) | (u64{mask} << 20));
+             emit(0x38f0000000070000ULL | (u64{239} << 8) | (u64{mask} << 20));
+-            emit(0x5ca0000000070000ULL | target | (u64{a} << 8) | (u64{b} << 20) |
++            emit(0x5ca0000000000000ULL | (u64{(native_predicate & 8) | (native_predicate != 7 ? guard_slot : 7U)} << 16) |
++                target | (u64{a} << 8) | (u64{b} << 20) |
+                 (u64{temporary} << 39) | (u64{insn.Bits(90, 1)} << 42));
+             emit(0x38f0000000070000ULL | (u64{253} << 8) | (u64{mask} << 20));
+             break;
+diff --git a/src/shader_recompiler/frontend/ampere/native.h b/src/shader_recompiler/frontend/ampere/native.h
+--- a/src/shader_recompiler/frontend/ampere/native.h
++++ b/src/shader_recompiler/frontend/ampere/native.h
+@@ -43,7 +43,7 @@
+ 
+ // Salt mixed into the pipeline cache identity of native-translated programs. Bump it whenever the
+ // native translation changes so cached results of an older translator are never reused.
+-inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a0000eULL;
++inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a0000fULL;
+ 
+ // Maxwell Location offset of native instruction `index` (same mapping the lowering uses).
+ [[nodiscard]] constexpr u32 LocationOf(u32 index) {
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -15,6 +15,7 @@
+ #include <algorithm>
+ #include <array>
+ #include <bit>
++#include <unordered_map>
+ #include <cstdio>
+ #include <memory>
+ #include <cstdlib>
+@@ -453,6 +454,23 @@
+         // Neither is a task/mesh draw this device cannot run: it is dropped, and nothing waits on it.
+         const bool deferred_draw = pipeline_cache.TakeDeferredDraw();
+         submitted = deferred_draw || maxwell3d->regs.IsMeshEnabled();
++        if (!deferred_draw) {
++            // EDEN_DRAW_NO_PIPELINE: which shader pairs lose their draws, and how often.
++            const auto& lost_regs = maxwell3d->regs;
++            const u64 lost_vs = (u64{lost_regs.pipelines[1].reserved[0] & 0xff} << 32) | lost_regs.pipelines[1].reserved[1];
++            const u64 lost_ps = (u64{lost_regs.pipelines[5].reserved[0] & 0xff} << 32) | lost_regs.pipelines[5].reserved[1];
++            static std::unordered_map<u64, u64> lost_by_pair;
++            static u64 lost_total{};
++            ++lost_total;
++            const u64 lost_count = ++lost_by_pair[(lost_vs << 20) ^ lost_ps];
++            if ((lost_count == 1 && lost_by_pair.size() <= 256) || lost_count == 4096 || lost_count == 65536) {
++                std::fprintf(stderr, "EDEN_DRAW_NO_PIPELINE vs=%llx ps=%llx count=%llu mesh=%d rt0=%ux%u total=%llu pairs=%zu\n",
++                             static_cast<unsigned long long>(lost_vs), static_cast<unsigned long long>(lost_ps),
++                             static_cast<unsigned long long>(lost_count), lost_regs.IsMeshEnabled() ? 1 : 0,
++                             lost_regs.rt[0].width, lost_regs.rt[0].height,
++                             static_cast<unsigned long long>(lost_total), lost_by_pair.size());
++            }
++        }
+         if (!deferred_draw && maxwell3d->regs.IsMeshEnabled()) {
+             static std::atomic<u64> lost_mesh_draws{};
+             if (const u64 count = ++lost_mesh_draws; count <= 8 || count % 4096 == 0) {

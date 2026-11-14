@@ -1,6 +1,6 @@
 # Roadmap
 
-- **FPKG support** - install ProsperoEden as a fake package, alongside the current homebrew folder install.
+- **FPKG support** - install DirkuLator as a fake package, alongside the current homebrew folder install.
 - **More performance** - CPU and GPU work to keep demanding games at their target frame rate: the short stutter when a game reaches new areas (the block list, **Compile ahead** in **Settings > Performance**, once it has run in more games and can be on by default), heavy cutscenes, and games that run slower in Docked mode than in Handheld.
 - **More reliable game loading** - a game that hangs while it loads can now be left with Touchpad + L1; the hangs themselves still need a log from a game that does it.
 - **Game names in the menu's language** - a game carries a name for each language; the Library shows the first one that is text. Show the one in the menu's language, and the name from an installed update when it has one.

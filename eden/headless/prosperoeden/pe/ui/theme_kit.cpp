@@ -1,4 +1,4 @@
-// ProsperoEden - A UI kit theme (ps5-homebrew-ui) as a launcher theme.
+// DirkuLator - A UI kit theme (ps5-homebrew-ui) as a launcher theme.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 //

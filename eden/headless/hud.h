@@ -141,6 +141,34 @@ inline void GuestScreen(uint32_t width, uint32_t height) {
     guest_height.store(height, std::memory_order_relaxed);
 }
 inline void ForgetGuestScreen() { GuestScreen(0, 0); }
+// DirkuLator 0.5.18: the performance monitor's last second (perf_monitor.h), for the line's
+// "P99 41.2MS DRW 1234 SHD 3" pieces: the 99th percentile frame time in tenths of a millisecond,
+// the draws and the pipelines built in that second. Shown only while the monitor sets
+// perf_shown, so the line is what it always was without it; ~0u: not measured yet.
+inline std::atomic<bool> perf_shown{false};
+inline std::atomic<uint32_t> perf_p99_tenths{~0u}, perf_draws{~0u}, perf_pipelines{~0u};
+// DirkuLator 0.5.20: graphs under the line (perf_monitor.h fills them, MakeHudGraphs draws them):
+// the frame time of each of the last 104 frames, and the last 104 seconds of the frame rate, the
+// busiest emulated core, the GPU and the memory pool. A sample is a byte, 0 to 255 of the graph's
+// height; `latest` is the newest value in the graph's own unit, for its label. Shown only while
+// the monitor sets graphs_shown (/data/eden-nx2/perf-graphs-off.txt drops them).
+inline constexpr size_t kGraphSamples = 104;
+enum Graph : int { kGraphFrameTime, kGraphFps, kGraphCpu, kGraphGpu, kGraphMemory, kGraphCount };
+struct GraphRing {
+    std::array<std::atomic<uint8_t>, kGraphSamples> samples{};
+    std::atomic<uint32_t> head{0};
+    std::atomic<uint32_t> latest{~0u};
+    void Push(double fraction, uint32_t value) {
+        const auto at = head.load(std::memory_order_relaxed);
+        samples[at % kGraphSamples].store(
+            static_cast<uint8_t>(std::lround(std::clamp(fraction, 0.0, 1.0) * 255.0)),
+            std::memory_order_relaxed);
+        latest.store(value, std::memory_order_relaxed);
+        head.store(at + 1, std::memory_order_release);
+    }
+};
+inline std::array<GraphRing, kGraphCount> graphs{};
+inline std::atomic<bool> graphs_shown{false};
 } // namespace Hud
 // True while the snapshot is the loading screen rather than the overlay's line.
 inline bool HudLoading(const HudSnapshot& hud) {
@@ -364,6 +392,26 @@ inline std::array<char, kHudTextMax + 1> FormatHudText(const HudClock& clock, co
             put(piece);
         }
     }
+    // The performance monitor's pieces (Hud::perf_shown): the slow frames the worst-of-second MS
+    // hides behind one number, how much the game draws, and the pipelines being built, which is
+    // what a stutter usually is.
+    if (Hud::perf_shown.load(std::memory_order_relaxed)) {
+        const uint32_t p99 = Hud::perf_p99_tenths.load(std::memory_order_relaxed);
+        const uint32_t draws = Hud::perf_draws.load(std::memory_order_relaxed);
+        const uint32_t pipelines = Hud::perf_pipelines.load(std::memory_order_relaxed);
+        if (p99 != ~0u) {
+            std::snprintf(piece, sizeof(piece), " P99 %.1fMS", p99 / 10.0);
+            put(piece);
+        }
+        if (draws != ~0u) {
+            std::snprintf(piece, sizeof(piece), " DRW %u", draws);
+            put(piece);
+        }
+        if (pipelines != ~0u) {
+            std::snprintf(piece, sizeof(piece), " SHD %u", pipelines);
+            put(piece);
+        }
+    }
     if ((fields & kHudFieldPing) && ping_ms >= 0) {
         std::snprintf(piece, sizeof(piece), " P%d", std::min(ping_ms, 9999));
         put(piece);
@@ -394,6 +442,84 @@ inline HudSnapshot MakeHudSnapshot(const HudClock& clock, const HudClock& output
     hud.loading = kHudOverlayFlag | HudSizeField(size) | (colors ? kHudColorsFlag : 0u);
     return hud;
 }
+// DirkuLator 0.5.20: the graphs under the line (Hud::graphs). Each is a snapshot of its own,
+// drawn with the overlay's pipeline (vulkan_hud_draw.inc): `loading` carries the overlay bit, the
+// chip's size and kHudGraphFlag, then whether higher is better (bit 24), the sample above which
+// a bar turns from warn to bad (bits 16-23), from good to warn (bits 8-15), and a guide line
+// (bits 0-7, 0: none); the first two words carry the label (up to 8 characters), the other 26
+// the 104 samples, oldest first. x and y are the box's top left corner in a picture 1080 rows
+// high and width its width in those units, as for the line (vulkan_hud.frag draws it).
+inline constexpr uint32_t kHudGraphFlag = 0x04000000u, kHudGraphHigherBetter = 0x01000000u;
+inline constexpr uint32_t kHudGraphWidth = 220, kHudGraphHeight = 60, kHudGraphGap = 4;
+inline std::array<HudSnapshot, Hud::kGraphCount> MakeHudGraphs(const HudSnapshot& chip) {
+    std::array<HudSnapshot, Hud::kGraphCount> out{};
+    if (!Hud::graphs_shown.load(std::memory_order_relaxed) || chip.width == 0 ||
+        (chip.loading & kHudOverlayFlag) == 0)
+        return out;
+    const uint32_t size_field = chip.loading & kHudSizeMask;
+    const float scale = HudSizeScale(size_field);
+    const auto units = [scale](uint32_t value) { return static_cast<uint32_t>(std::lround(value * scale)); };
+    const uint32_t w = units(kHudGraphWidth), h = units(kHudGraphHeight), gap = units(kHudGraphGap);
+    const uint32_t chip_h = units(static_cast<uint32_t>(kHudBoxUnits));
+    // Beside the line's corner: under it at the top, over it at the bottom, from the same side.
+    const bool right = chip.x > kHudPictureWidth / 2, bottom = chip.y > kHudPictureHeight / 2;
+    const uint32_t per_row = std::max<uint32_t>(1, (kHudPictureWidth - 2 * kHudBoxX + gap) / (w + gap));
+    const auto byte = [](double fraction) {
+        return static_cast<uint32_t>(std::lround(std::clamp(fraction, 0.0, 1.0) * 255.0));
+    };
+    for (int g = 0; g < Hud::kGraphCount; ++g) {
+        const Hud::GraphRing& ring = Hud::graphs[g];
+        const uint32_t latest = ring.latest.load(std::memory_order_relaxed);
+        char label[9]{};
+        uint32_t warn = 0, bad = 0, guide = 0, higher_better = 0;
+        switch (g) {
+        case Hud::kGraphFrameTime:  // 0 to 100 ms; good to 16.7, warn to 33.4, guide at 33.3
+            if (latest == ~0u) std::snprintf(label, sizeof(label), "FT --");
+            else if (latest < 100) std::snprintf(label, sizeof(label), "FT %uMS", latest);
+            else std::snprintf(label, sizeof(label), "%uMS", std::min(latest, 99999u));
+            warn = byte(16.7 / 100.0), bad = byte(33.4 / 100.0), guide = byte(33.3 / 100.0);
+            break;
+        case Hud::kGraphFps:  // 0 to 60; good from 28, warn from 15, guide at 30
+            if (latest == ~0u) std::snprintf(label, sizeof(label), "FPS --");
+            else std::snprintf(label, sizeof(label), "FPS %u", std::min(latest, 999u));
+            warn = byte(28.0 / 60.0), bad = byte(15.0 / 60.0), guide = byte(30.0 / 60.0);
+            higher_better = kHudGraphHigherBetter;
+            break;
+        case Hud::kGraphCpu:
+        case Hud::kGraphGpu:  // percent; good to 70, warn to 90
+            if (latest == ~0u) std::snprintf(label, sizeof(label), g == Hud::kGraphCpu ? "CPU --" : "GPU --");
+            else std::snprintf(label, sizeof(label), g == Hud::kGraphCpu ? "CPU %u%%" : "GPU %u%%", std::min(latest, 100u));
+            warn = byte(0.70), bad = byte(0.90);
+            break;
+        default:  // memory used, percent of the pool; guide where 1 GiB is left (perf_monitor.h)
+            if (latest == ~0u) std::snprintf(label, sizeof(label), "MEM --");
+            else std::snprintf(label, sizeof(label), "MEM %u%%", std::min(latest & 0xffffu, 100u));
+            warn = byte(0.85), bad = byte(0.92), guide = latest == ~0u ? 0 : (latest >> 16) & 0xffu;
+            break;
+        }
+        HudSnapshot& graph = out[g];
+        std::memcpy(graph.glyphs.data(), label, 8);
+        const uint32_t head = ring.head.load(std::memory_order_acquire);
+        auto* bytes = reinterpret_cast<uint8_t*>(graph.glyphs.data() + 2);
+        for (size_t i = 0; i < Hud::kGraphSamples; ++i) {
+            // Oldest first; a ring not yet full starts with empty bars.
+            const uint32_t back = static_cast<uint32_t>(Hud::kGraphSamples - i);
+            bytes[i] = head >= back ? ring.samples[(head - back) % Hud::kGraphSamples].load(std::memory_order_relaxed) : 0;
+        }
+        const uint32_t row = static_cast<uint32_t>(g) / per_row, column = static_cast<uint32_t>(g) % per_row;
+        const uint32_t in_row = std::min<uint32_t>(per_row, Hud::kGraphCount - row * per_row);
+        const uint32_t row_w = in_row * w + (in_row - 1) * gap;
+        const uint32_t row_x = right ? kHudPictureWidth - kHudBoxX - row_w : kHudBoxX;
+        graph.x = row_x + column * (w + gap);
+        graph.y = bottom ? chip.y - (row + 1) * (h + gap) : chip.y + chip_h + gap + row * (h + gap);
+        graph.width = w;
+        graph.loading = kHudOverlayFlag | size_field | kHudGraphFlag | higher_better | (bad << 16) |
+                        (warn << 8) | guide;
+    }
+    return out;
+}
+// Read on the renderer thread beside GetVulkanHud: the graphs for the line it returns.
+std::array<HudSnapshot, Hud::kGraphCount> GetVulkanHudGraphs();
 // The OpenGL renderer has no frame generation: what it presents is the guest's own rate, so both
 // numbers come from one clock. Callers that cannot have an output clock use this.
 inline std::array<char, kHudTextMax + 1> FormatHudText(const HudClock& clock, double speed,

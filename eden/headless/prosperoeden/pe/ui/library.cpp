@@ -1,4 +1,4 @@
-// ProsperoEden - Launcher library: the game list, its details and per-game settings.
+// DirkuLator - Launcher library: the game list, its details and per-game settings.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

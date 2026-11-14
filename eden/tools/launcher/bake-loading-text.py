@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ProsperoEden - Bake the loading screen's lettering into GLSL distance fields.
+# DirkuLator - Bake the loading screen's lettering into GLSL distance fields.
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Writes headless/loading_text.glsl: capitals, digits and a few signs of Montserrat Medium as
@@ -32,7 +32,7 @@ OUTPUT = ROOT / "headless/loading_text.glsl"
 ADVANCES_OUTPUT = ROOT / "headless/hud_text_advances.h"
 
 # The lines the screen shows, in the order the shader names them (loading_scene.glsl).
-LINES = ["PROSPEROEDEN", "READING THE GAME", "STARTING GRAPHICS", "BUILDING SHADERS", "STARTING THE GAME",
+LINES = ["DIRKULATOR", "READING THE GAME", "STARTING GRAPHICS", "BUILDING SHADERS", "STARTING THE GAME",
          "LOADING", "S"]
 # What those lines use, plus everything the overlay's line can say: the OGL/VLK backend,
 # "27/60FPS 37.0MS CPU 55% GPU 43% MEM 4.1/8.0G" and a ping (hud.h, FormatHudText). One set:

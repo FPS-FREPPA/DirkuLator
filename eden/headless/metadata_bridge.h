@@ -74,10 +74,10 @@ int eden_save_import_source(uint64_t title_id);
 enum {
     EDEN_SAVE_DONE = 0,
     EDEN_SAVE_NOTHING = 1,   // no source (import), or the game has no save yet (export)
-    EDEN_SAVE_NO_USER = 2,   // ProsperoEden has not created its user: start any game once
+    EDEN_SAVE_NO_USER = 2,   // DirkuLator has not created its user: start any game once
     EDEN_SAVE_FAILED = 3,    // the copy failed; the current save is unchanged
 };
-// Copies the game's saves from the source into ProsperoEden's, after moving the current ones to
+// Copies the game's saves from the source into DirkuLator's, after moving the current ones to
 // /data/eden-nx2/backup/save-import (path receives that folder, or stays empty when the game
 // had no save).
 int eden_save_import(uint64_t title_id, char* path, size_t capacity);

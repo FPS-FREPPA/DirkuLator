@@ -15,6 +15,10 @@
 #   (which leaves EFLAGS alone), the setter also tests the register and the terminal branches on
 #   those flags. The terminal checks the code emitted in between byte for byte and otherwise keeps
 #   upstream's compare. dev-settings jit_checkbit_flags=off.
+# - CMP/SUBS/... + B.cond (A64 If terminal): the terminal loaded NZCV back from the JIT state that
+#   SetNZCV had just stored. When that store is the block's last code before the frame-pointer
+#   restore, the terminal takes NZCV from the register it was stored from (no reload); otherwise,
+#   or when that register is RBP, it keeps upstream's load. dev-settings jit_cond_flags=off.
 
 function(eden_fast_paths_require source anchor what)
     string(FIND "${source}" "${anchor}" at)
@@ -54,10 +58,59 @@ macro(eden_fast_paths_emitter bits)
     e.code.cmp(e.code.byte[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, check_bit)], u8(0));
     e.code.jz(fail);
 ]==])
-        foreach(anchor IN ITEMS eden_fp_prologue eden_fp_set_check eden_fp_check_term)
+        set(eden_fp_set_nzcv [==[void A64EmitX64::EmitA64SetNZCV(A64EmitContext& ctx, IR::Inst* inst) {
+    auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    const Xbyak::Reg32 to_store = ctx.reg_alloc.UseScratchGpr(code, args[0]).cvt32();
+    code.mov(dword[code.ABI_JIT_PTR + offsetof(A64JitState, cpsr_nzcv)], to_store);
+}
+]==])
+        set(eden_fp_if_term [==[bool EmitTerminalImpl(A64EmitX64& e, IR::Term::If terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
+    switch (terminal.if_) {
+    case IR::Cond::AL:
+    case IR::Cond::NV:
+        e.EmitLeafTerminal(terminal.then_, initial_location, is_single_step);
+        break;
+    default:
+        Xbyak::Label pass = e.EmitCond(terminal.if_);
+]==])
+        foreach(anchor IN ITEMS eden_fp_prologue eden_fp_set_check eden_fp_check_term eden_fp_set_nzcv eden_fp_if_term)
             eden_fast_paths_require("${emitter}" "${${anchor}}" "a64_emit_x64.cpp ${anchor}")
         endforeach()
-        string(REPLACE "${eden_fp_prologue}" "    eden_checkbit_mark = nullptr;\n${eden_fp_prologue}" emitter "${emitter}")
+        string(REPLACE "${eden_fp_prologue}" "    eden_checkbit_mark = nullptr;\n    eden_cond_mark = nullptr;\n${eden_fp_prologue}" emitter "${emitter}")
+        string(REPLACE "${eden_fp_set_nzcv}" [==[void A64EmitX64::EmitA64SetNZCV(A64EmitContext& ctx, IR::Inst* inst) {
+    auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    const Xbyak::Reg32 to_store = ctx.reg_alloc.UseScratchGpr(code, args[0]).cvt32();
+    code.mov(dword[code.ABI_JIT_PTR + offsetof(A64JitState, cpsr_nzcv)], to_store);
+    eden_cond_mark = nullptr;
+    if (__atomic_load_n(&eden_cond_flags, __ATOMIC_RELAXED)) {
+        // ProsperoEden (fast_paths.cmake): NZCV stays in to_store for an If terminal right after.
+        eden_cond_mark = code.getCurr();
+        eden_cond_mark_reg = to_store.getIdx();
+    }
+}
+]==] emitter "${emitter}")
+        string(REPLACE "${eden_fp_if_term}" [==[bool EmitTerminalImpl(A64EmitX64& e, IR::Term::If terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
+    // ProsperoEden (fast_paths.cmake): NZCV is still in the SetNZCV register when the only code
+    // since its store is Emit's frame-pointer restore, mov rbp, [rsp + 0x418].
+    static constexpr unsigned char restore_rbp[] = {0x48, 0x8B, 0xAC, 0x24, 0x18, 0x04, 0x00, 0x00};
+    constexpr bool restore_layout = ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer) == 0x418;
+    const unsigned char* const mark = eden_cond_mark;
+    eden_cond_mark = nullptr;
+    eden_cond_reg = -1;
+    if (restore_layout && mark && eden_cond_mark_reg != Xbyak::Operand::RBP &&
+        e.code.getCurr() == mark + sizeof(restore_rbp) && std::memcmp(mark, restore_rbp, sizeof(restore_rbp)) == 0 &&
+        terminal.if_ != IR::Cond::AL && terminal.if_ != IR::Cond::NV) {
+        eden_cond_reg = eden_cond_mark_reg;
+        __atomic_fetch_add(&eden_cond_fused, 1, __ATOMIC_RELAXED);
+    }
+    switch (terminal.if_) {
+    case IR::Cond::AL:
+    case IR::Cond::NV:
+        e.EmitLeafTerminal(terminal.then_, initial_location, is_single_step);
+        break;
+    default:
+        Xbyak::Label pass = e.EmitCond(terminal.if_);
+]==] emitter "${emitter}")
         string(REPLACE "${eden_fp_set_check}" [==[void A64EmitX64::EmitA64SetCheckBit(A64EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const Xbyak::Reg8 to_store = ctx.reg_alloc.UseGpr(code, args[0]).cvt8();
@@ -90,8 +143,38 @@ macro(eden_fast_paths_emitter bits)
 extern \"C\" bool eden_checkbit_flags;  // ProsperoEden (fast_paths.cmake)
 extern \"C\" unsigned long long eden_checkbit_fused;
 static thread_local const unsigned char* eden_checkbit_mark = nullptr;
+extern \"C\" bool eden_cond_flags;
+extern \"C\" unsigned long long eden_cond_fused;
+extern \"C\" __thread int eden_cond_reg;
+static thread_local const unsigned char* eden_cond_mark = nullptr;
+static thread_local int eden_cond_mark_reg = -1;
 ")
     endif()
+endmacro()
+
+# EmitX64::EmitCond (emit_x64.cpp, shared by the A32/A64 terminals and A32 conditional blocks): called
+# from CMakeLists.txt on the derived emit_x64.cpp. Takes NZCV from the register the A64 If terminal
+# named (eden_cond_reg) instead of the JIT state, once.
+macro(eden_fast_paths_emit_cond)
+    set(eden_fp_cond_load "Xbyak::Label EmitX64::EmitCond(IR::Cond cond) {
+    Xbyak::Label pass;
+
+    code.mov(eax, dword[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_cpsr_nzcv]);
+")
+    eden_fast_paths_require("${emitter}" "${eden_fp_cond_load}" "emit_x64.cpp EmitCond")
+    string(REPLACE "${eden_fp_cond_load}" [==[Xbyak::Label EmitX64::EmitCond(IR::Cond cond) {
+    Xbyak::Label pass;
+
+    // ProsperoEden (fast_paths.cmake): the A64 If terminal found NZCV still in a register.
+    const int nzcv_reg = eden_cond_reg;
+    eden_cond_reg = -1;
+    if (nzcv_reg > 0) {
+        code.mov(eax, Xbyak::Reg32(nzcv_reg));
+    } else if (nzcv_reg < 0) {
+        code.mov(eax, dword[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_cpsr_nzcv]);
+    }
+]==] emitter "${emitter}")
+    string(PREPEND emitter "extern \"C\" __thread int eden_cond_reg;  // ProsperoEden (fast_paths.cmake)\n")
 endmacro()
 
 # FP compare and the A64 DMB translation: called with the other dynarmic overlays.

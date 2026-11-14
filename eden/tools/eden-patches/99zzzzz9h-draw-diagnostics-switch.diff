@@ -1,0 +1,59 @@
+DirkuLator 0.5.10 (performance, rendering unchanged): the per-draw diagnostics in GraphicsPipeline::ConfigureImpl (050 depth
+samplers, 0.3 table census, watched-target draws, 0.2 capture constant buffers) run only when
+/data/eden-nx2/draw-diagnostics.txt exists. GPU-thread draw cost was ~24.5 us/draw in 0.5.8 gameplay.
+
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -63,6 +63,15 @@
+ 
+ namespace Vulkan {
+ namespace {
++// 0.5.10: the per-draw diagnostics of 0.2-0.5.3 (depth samplers, table census, watched targets,
++// capture constant buffers) cost a mutex, hash lookups and string formatting on every draw. They
++// run only when /data/eden-nx2/draw-diagnostics.txt exists, checked once.
++bool DrawDiagnostics() {
++    static const bool enabled = static_cast<bool>(std::ifstream("/data/eden-nx2/draw-diagnostics.txt"));
++    return enabled;
++}
++} // Anonymous namespace
++namespace {
+ using boost::container::small_vector;
+ using boost::container::static_vector;
+ using Shader::ImageBufferDescriptor;
+@@ -713,7 +722,7 @@
+     // (EDEN_DEPTH_SAMPLER), and dump the stage's used constant buffers once per program
+     // (EDEN_DEPTH_CBUF, /data/eden-nx2/logs/depth-cbuf-*.bin) so the reference values can be
+     // recomputed offline. At most 24 lines per program, 2000 in all, 32 programs dumped.
+-    {
++    if (DrawDiagnostics()) {
+         static std::atomic<bool> depth_log_done{false};
+         if (!depth_log_done.load(std::memory_order_relaxed)) {
+             static std::mutex depth_log_mutex;
+@@ -839,7 +848,7 @@
+ #endif
+ #ifdef EDEN_NX2_PS5_PROTO
+     // 0.3 (diagnostic): descriptor-table census (051-review E.1), see table-census.txt above port-0.3.py.
+-    {
++    if (DrawDiagnostics()) {
+         struct CensusSpec {
+             u64 key{};
+             u32 cbuf{}, offset{}, header{}, stride{}, field{}, list_cbuf{}, list_offset{};
+@@ -981,7 +990,7 @@
+     // handle-zero program (handle not computable, sampled as handle 0) and how many have a null view.
+     // For foliage missing from the static map: an alpha-tested shadow draw with an empty texture
+     // discards every pixel.
+-    if (regs.zeta_enable && VideoCommon::NativeDrawTrace::IsWatched(regs.zeta.Address())) {
++    if (DrawDiagnostics() && regs.zeta_enable && VideoCommon::NativeDrawTrace::IsWatched(regs.zeta.Address())) {
+         static std::mutex target_mutex;
+         static std::unordered_map<u64, u32> target_draws; // triple hash -> draws seen
+         static u32 target_lines{};
+@@ -1036,7 +1045,7 @@
+     // 0.2 (diagnostic): constant buffers of the captured frame. While a capture is armed, the first draw of
+     // each program that uses depth compare or is named in dump-shaders.txt writes its used constant buffers
+     // to /data/eden-nx2/logs/capture-cbuf-NN/ (NN = the capture folder's number) and an EDEN_CAPTURE_CBUF line.
+-    {
++    if (DrawDiagnostics()) {
+         static std::mutex capture_cbuf_mutex;
+         static bool capture_was_armed{};
+         static u32 capture_next{}, capture_current{};

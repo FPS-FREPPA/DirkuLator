@@ -103,7 +103,7 @@ if __name__ == '__main__':
     parser.add_argument('--url', required=True, help='Permanent HTTPS URL of this versioned ZIP asset')
     parser.add_argument('--previous', type=Path, help='Previous feed, to retain older compatible releases')
     parser.add_argument('--notes', type=Path, help='UTF-8 release notes')
-    parser.add_argument('--min-app', help='Optional minimum ProsperoEden version')
+    parser.add_argument('--min-app', help='Optional minimum DirkuLator version')
     args = parser.parse_args()
     try:
         print(package(args.pack, args.output, args.url, args.previous,

@@ -1,0 +1,132 @@
+Build 041 (041M, diagnostic only; review "Claude_Handoff_Build_040_FIXED.md"): no budget changes.
+- Fiber stacks are filled with a pattern; a switch into a fiber whose lowest 256 bytes changed logs
+  EDEN_FIBER_STACK_OVERFLOW and aborts; EDEN_FIBER_STACKS every 30 s: alive, size, deepest use.
+- (src/direct_memory.c) every direct allocation/release of the app in a ring that never allocates
+  (EDEN_DMEM lines each second; the crash report lists the last 160); EDEN_DMEM_HELD compares the
+  app's running total with what the pool has given out.
+- (headless/heap_arenas.inc) EDEN_HEAP_LARGE: every live large heap block with its call chain;
+  census sites start with the allocator wrapper's caller (aligned_alloc's re-charged).
+
+diff --git a/src/common/fiber.cpp b/src/common/fiber.cpp
+--- a/src/common/fiber.cpp
++++ b/src/common/fiber.cpp
+@@ -4,7 +4,13 @@
+ // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <algorithm>
++#include <array>
++#include <chrono>
++#include <atomic>
++#include <cstdio>
+ #include <cstdlib>
++#include <cstring>
+ #include <memory>
+ #include <thread>
+ #include <mutex>
+@@ -23,6 +29,22 @@
+ #endif
+ constexpr u32 CANARY_VALUE = 0xDEADBEEF;
+ 
++constexpr u8 STACK_PATTERN = 0xFD;
++constexpr size_t STACK_GUARD = 256;
++constexpr size_t STACK_SLOTS = 1024;
++// The stacks alive, for the high-water report (a slot is null when free).
++std::array<std::atomic<u8*>, STACK_SLOTS> stack_slots{};
++std::atomic<size_t> stack_deepest{0};
++
++bool StackGuardIntact(const u8* stack) {
++    for (size_t i = 0; i < STACK_GUARD; ++i) {
++        if (stack[i] != STACK_PATTERN) {
++            return false;
++        }
++    }
++    return true;
++}
++
+ size_t FiberStackSize() {
+     static const size_t size = [] {
+         if (const char* value = std::getenv("EDEN_NX2_FIBER_STACK_KIB")) {
+@@ -66,6 +88,13 @@
+ Fiber::Fiber(std::function<void()>&& entry_point_func) : impl{std::make_unique<FiberImpl>()} {
+     impl->entry_point = std::move(entry_point_func);
+     impl->stack.reset(new u8[FiberStackSize()]);
++    std::memset(impl->stack.get(), STACK_PATTERN, FiberStackSize());
++    for (auto& slot : stack_slots) {
++        u8* expected = nullptr;
++        if (slot.compare_exchange_strong(expected, impl->stack.get())) {
++            break;
++        }
++    }
+     impl->stack_limit = impl->stack.get();
+     u8* stack_base = impl->stack_limit + FiberStackSize();
+     impl->context = boost::context::detail::make_fcontext(stack_base, FiberStackSize(), [](boost::context::detail::transfer_t transfer) -> void {
+@@ -84,6 +113,14 @@
+ Fiber::Fiber() : impl{std::make_unique<FiberImpl>()} {}
+ 
+ Fiber::~Fiber() {
++    if (impl && impl->stack) {
++        for (auto& slot : stack_slots) {
++            u8* expected = impl->stack.get();
++            if (slot.compare_exchange_strong(expected, nullptr)) {
++                break;
++            }
++        }
++    }
+     if (!impl->released) {
+         // Make sure the Fiber is not being used
+         const bool locked = impl->guard.try_lock();
+@@ -103,6 +140,12 @@
+ }
+ 
+ void Fiber::YieldTo(std::weak_ptr<Fiber> weak_from, Fiber& to) {
++    if (to.impl->stack && !StackGuardIntact(to.impl->stack.get())) {
++        std::fprintf(stderr, "EDEN_FIBER_STACK_OVERFLOW stack=%p size_kib=%zu (fiber-stack-kib.txt)\n",
++                     static_cast<void*>(to.impl->stack.get()), FiberStackSize() >> 10);
++        std::fflush(stderr);
++        std::abort();
++    }
+     to.impl->guard.lock();
+     to.impl->previous_fiber = weak_from.lock();
+ 
+@@ -119,6 +162,40 @@
+     }
+ }
+ 
++// The memory report's thread (headless/performance.cpp), every 30 s: how deep the stacks went.
++extern "C" void eden_fiber_stacks_report(void) {
++    static long long last_ns = 0;
++    const long long now = std::chrono::duration_cast<std::chrono::nanoseconds>(
++                              std::chrono::steady_clock::now().time_since_epoch())
++                              .count();
++    if (last_ns != 0 && now - last_ns < 30'000'000'000LL) {
++        return;
++    }
++    last_ns = now;
++    const size_t size = FiberStackSize();
++    size_t alive = 0, deepest_now = 0, damaged = 0;
++    for (auto& slot : stack_slots) {
++        const u8* stack = slot.load(std::memory_order_acquire);
++        if (stack == nullptr) {
++            continue;
++        }
++        ++alive;
++        damaged += StackGuardIntact(stack) ? 0 : 1;
++        size_t untouched = 0;
++        while (untouched < size && stack[untouched] == STACK_PATTERN) {
++            ++untouched;
++        }
++        deepest_now = (std::max)(deepest_now, size - untouched);
++    }
++    size_t deepest = stack_deepest.load(std::memory_order_relaxed);
++    while (deepest_now > deepest && !stack_deepest.compare_exchange_weak(deepest, deepest_now)) {
++    }
++    deepest = (std::max)(deepest, deepest_now);
++    std::fprintf(stderr, "EDEN_FIBER_STACKS alive=%zu size_kib=%zu deepest_kib=%zu deepest_now_kib=%zu damaged=%zu\n",
++                 alive, size >> 10, deepest >> 10, deepest_now >> 10, damaged);
++    std::fflush(stderr);
++}
++
+ std::shared_ptr<Fiber> Fiber::ThreadToFiber() {
+     std::shared_ptr<Fiber> fiber = std::shared_ptr<Fiber>{new Fiber()};
+     fiber->impl->guard.lock();

@@ -1,0 +1,73 @@
+Build 049 (diagnostic only): a frame capture also saves, for every image in capture-watch.txt that it would
+otherwise skip (bigger than 64 MiB, or not drawn in the captured frame), a 3x3 grid of tiles of level 0 (at most
+1024x1024 each: corners, edge centres, centre). For the 12288x12288 D16 static shadow map. Rendering unchanged.
+
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -606,6 +606,65 @@
+                     << '\n';
+             ++order;
+         }
++        // 049: watched images the loop above skips (too big, or not drawn this frame): 3x3 tiles.
++        for (const auto [image_id, image] : slot_images) {
++            const auto& info = image->info;
++            if (!NativeDrawTrace::IsWatched(image->gpu_addr) || info.type != ImageType::e2D ||
++                info.num_samples != 1 ||
++                True(image->flags & (ImageFlagBits::Unbacked | ImageFlagBits::IsDecoding)) ||
++                !image->unswizzled_size_bytes ||
++                VideoCore::Surface::DefaultBlockWidth(info.format) != 1 ||
++                VideoCore::Surface::DefaultBlockHeight(info.format) != 1) {
++                continue;
++            }
++            if (image->modification_tick > last_frame_modification &&
++                image->unswizzled_size_bytes <= 64_MiB) {
++                continue; // saved whole above
++            }
++            const u32 bytes_per_pixel{VideoCore::Surface::BytesPerBlock(info.format)};
++            const u32 tile{(std::min)({1024U, info.size.width / 3, info.size.height / 3})};
++            if (tile == 0 || bytes_per_pixel == 0) {
++                continue;
++            }
++            const size_t tile_bytes{size_t{tile} * tile * bytes_per_pixel};
++            boost::container::small_vector<BufferImageCopy, 16> tiles;
++            const std::array<s32, 3> xs{0, static_cast<s32>((info.size.width - tile) / 2),
++                                        static_cast<s32>(info.size.width - tile)};
++            const std::array<s32, 3> ys{0, static_cast<s32>((info.size.height - tile) / 2),
++                                        static_cast<s32>(info.size.height - tile)};
++            for (const s32 y : ys) {
++                for (const s32 x : xs) {
++                    tiles.push_back(BufferImageCopy{
++                        .buffer_offset = tiles.size() * tile_bytes,
++                        .buffer_size = tile_bytes,
++                        .buffer_row_length = tile,
++                        .buffer_image_height = tile,
++                        .image_subresource = {.base_level = 0, .base_layer = 0, .num_layers = 1},
++                        .image_offset = {x, y, 0},
++                        .image_extent = {tile, tile, 1},
++                    });
++                }
++            }
++            const size_t total{tiles.size() * tile_bytes};
++            auto map = runtime.DownloadStagingBuffer(total);
++            const auto copies = FixSmallVectorADL(tiles);
++            image->DownloadMemory(map, copies);
++            runtime.Finish();
++            const std::string name = fmt::format("{:02}-{:x}-f{}-{}x{}-tiles3x3-{}.raw", order, image->gpu_addr,
++                                                 static_cast<u32>(info.format), info.size.width,
++                                                 info.size.height, tile);
++            std::ofstream raw(folder / name, std::ios::binary);
++            raw.write(reinterpret_cast<const char*>(map.mapped_span.data()), static_cast<std::streamsize>(total));
++            index << order << ' ' << fmt::format("{:#x}", image->gpu_addr) << ' ' << static_cast<u32>(info.format)
++                  << ' ' << tile << ' ' << tile * 9 << ' ' << info.resources.layers << ' '
++                  << info.resources.levels << ' ' << total << " 0 " << tile << ' ' << tile << ' '
++                  << image->modification_tick << ' ' << fmt::format("{:#x}", static_cast<u32>(image->flags))
++                  << ' ' << name << '\n';
++            writers << order << ' ' << fmt::format("{:#x} {} {:#x} {:#x}", image->gpu_addr, image->last_writer_kind,
++                                                   image->last_writer_first, image->last_writer_second)
++                    << '\n';
++            ++order;
++        }
+         // readers.txt: each image a draw or dispatch bound in the captured frame, with how often.
+         {
+             std::map<NativeDrawTrace::Read, u64> reads;

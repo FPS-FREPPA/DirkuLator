@@ -1,4 +1,4 @@
-// ProsperoEden - Launcher: the save sync. When the profile playing keeps its save data on a server
+// DirkuLator - Launcher: the save sync. When the profile playing keeps its save data on a server
 // (save-sync.json), a game's save data is synced before it starts (the save sync dialog: the game
 // starts once it is in step) and after it ended (once the menu is back, with a notice at the top
 // right). When both sides changed since they were last the same, the dialog asks which one stays.

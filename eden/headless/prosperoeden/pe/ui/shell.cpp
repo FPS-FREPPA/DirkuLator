@@ -1,4 +1,4 @@
-// ProsperoEden - The launcher's shell: the section rail, the shade over the artwork, the clock, and
+// DirkuLator - The launcher's shell: the section rail, the shade over the artwork, the clock, and
 // the title and hints every screen has.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -280,7 +280,7 @@ void Launcher::draw_rail(Canvas &c)
     if (open > 0.01f)
     {
         list.push_opacity(open);
-        text(c, "PROSPEROEDEN", 112.0f, baseline(40.0f, 64.0f, t.size_small), t.size_small, t.title, Align::left,
+        text(c, "DIRKULATOR", 112.0f, baseline(40.0f, 64.0f, t.size_small), t.size_small, t.title, Align::left,
              4.0f);
         list.pop_opacity();
     }

@@ -1,6 +1,6 @@
 # Third-party notices
 
-ProsperoEden is licensed under GPL-3.0-or-later (see [LICENSE](LICENSE)). It
+DirkuLator is licensed under GPL-3.0-or-later (see [LICENSE](LICENSE)). It
 builds on the following projects, each under its own license.
 
 ## Emulator
@@ -59,7 +59,7 @@ builds on the following projects, each under its own license.
   **[mpereiraesaa's fork](https://github.com/mpereiraesaa/PS5-Lapy-JB-Daemon)** and the pinned
   **[ProsperoEden compatibility fork](https://github.com/blackbearreloaded/PS5-Lapy-JB-Daemon)**.
   Lapy is MIT licensed; its shared protocol header is LGPL-2.1-or-later.
-  ProsperoEden pins the fork, invokes its unmodified exact-title helper build,
+  DirkuLator pins the fork, invokes its unmodified exact-title helper build,
   verifies its generated manifest and bundles the helper ELF with its license.
 - **[ps5log](https://github.com/mpereiraesaa/ps5-agc-gears/tree/1ae1f9182abd2770c131b97419034fb85173c2dc/native/ps5log)**,
   GPL-3.0-or-later. The pinned single-header logging client used as an upstream
@@ -88,9 +88,13 @@ builds on the following projects, each under its own license.
 
 ## Thanks
 
-ProsperoEden exists thanks to the Eden maintainers and contributors, Mihawk,
+DirkuLator exists thanks to the Eden maintainers and contributors, Mihawk,
 mpereiraesaa, John Törnblom, SvenGDK, and the whole PS5 homebrew community.
 
 ## Lua 5.4.9
 
 Embedded launcher scripting runtime. Copyright Lua.org, PUC-Rio. MIT license; see `third_party/lua/LICENSE.txt`. Source and checksum: `third_party/lua/SOURCE.json`.
+
+## AV1 decoder
+
+- **dav1d 1.5.4**, VideoLAN and contributors, BSD-2-Clause. Source and exact revision are pinned in `eden/tools/deps.json` (or `tools/deps.json` from the port directory). Its original copyright and license accompany the dependency source.

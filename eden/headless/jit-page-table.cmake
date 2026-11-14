@@ -25,7 +25,7 @@ function(eden_page_table_replace old new)
 endfunction()
 
 eden_page_table_replace("    /// Specifies sign bit for page table entries.\n" [=[
-    /// ProsperoEden: the JIT's direct table (headless/jit-page-table.cmake) starts this many bytes
+    /// DirkuLator: the JIT's direct table (headless/jit-page-table.cmake) starts this many bytes
     /// after the entries: 1 GiB, the entries of a 39-bit address space.
     static constexpr std::size_t DIRECT_TABLE_OFFSET = std::size_t{1} << 30;
     /// Whether process page tables keep a direct table: -1 until the first table is sized, then

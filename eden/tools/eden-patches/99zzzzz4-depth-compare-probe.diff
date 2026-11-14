@@ -1,0 +1,150 @@
+Build 050 (diagnostic only): for each depth-compare texture a draw binds, log once per distinct combination
+the raw guest sampler (compare enable/function, wrap, filters, border) and the bound view (EDEN_DEPTH_SAMPLER),
+and dump the stage's used constant buffers once per program to /data/eden-nx2/logs/depth-cbuf-*.bin
+(EDEN_DEPTH_CBUF). For the static shadow map that the screen shadow mask reads as lit. Rendering unchanged.
+
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -10,6 +10,10 @@
+ 
+ #include "shader_recompiler/frontend/ampere/program_capture.h"
+ #include <algorithm>
++#include <atomic>
++#include <mutex>
++#include <unordered_map>
++#include <unordered_set>
+ #include <cstdio>
+ #include <cstring>
+ #include <cstdlib>
+@@ -488,9 +492,11 @@
+     thread_local boost::container::small_vector<VideoCommon::ImageViewInOut, 64> views;
+     thread_local boost::container::small_vector<size_t, 64> excluded_views;
+     thread_local boost::container::small_vector<VideoCommon::SamplerId, 64> samplers;
++    thread_local boost::container::small_vector<u32, 64> sampler_indices;
+     views.clear();
+     excluded_views.clear();
+     samplers.clear();
++    sampler_indices.clear();
+     views.reserve(num_image_elements);
+     samplers.reserve(num_textures);
+ 
+@@ -662,6 +668,7 @@
+                     return texture_cache.GetSamplerId(handle.second, false);
+                 })};
+                 samplers.push_back(sampler);
++                sampler_indices.push_back(handle.second);
+             }
+         }
+         if constexpr (Spec::has_images) {
+@@ -696,6 +703,110 @@
+     // These slots cannot reach this operation under the shader's own branch
+     // conditions. Preserve array indexing and use a correctly typed null view.
+     for (const size_t index : excluded_views) views[index].id = VideoCommon::NULL_IMAGE_VIEW_ID;
++#ifdef EDEN_NX2_PS5_PROTO
++    // 050 (diagnostic): for every depth-compare texture element, log once per distinct combination the
++    // raw guest sampler with its compare, wrap, filter and border fields and the bound view
++    // (EDEN_DEPTH_SAMPLER), and dump the stage's used constant buffers once per program
++    // (EDEN_DEPTH_CBUF, /data/eden-nx2/logs/depth-cbuf-*.bin) so the reference values can be
++    // recomputed offline. At most 24 lines per program, 2000 in all, 32 programs dumped.
++    {
++        static std::atomic<bool> depth_log_done{false};
++        if (!depth_log_done.load(std::memory_order_relaxed)) {
++            static std::mutex depth_log_mutex;
++            static std::unordered_set<u64> depth_log_seen;
++            static std::unordered_map<u64, u32> depth_log_per_program;
++            static std::unordered_set<u64> depth_cbuf_dumped;
++            static u32 depth_log_lines{};
++            size_t view_pos{};
++            size_t sampler_pos{};
++            for (size_t stage = 0; stage < stage_infos.size(); ++stage) {
++                if (!Spec::enabled_stages[stage]) continue;
++                const Shader::Info& info{stage_infos[stage]};
++                if constexpr (Spec::has_texture_buffers) view_pos += Shader::NumDescriptors(info.texture_buffer_descriptors);
++                if constexpr (Spec::has_image_buffers) view_pos += Shader::NumDescriptors(info.image_buffer_descriptors);
++                const u64 program = (u64{regs.pipelines[stage + 1].reserved[0] & 0xff} << 32) |
++                                    regs.pipelines[stage + 1].reserved[1];
++                bool stage_has_depth{};
++                for (const auto& desc : info.texture_descriptors) {
++                    for (u32 index = 0; index < desc.count; ++index, ++view_pos, ++sampler_pos) {
++                        if (!desc.is_depth || view_pos >= views.size() || sampler_pos >= sampler_indices.size())
++                            continue;
++                        stage_has_depth = true;
++                        const u32 tsc_index = sampler_indices[sampler_pos];
++                        Tegra::Texture::TSCEntry tsc{};
++                        const GPUVAddr tsc_addr = regs.tex_sampler.Address() + u64{tsc_index} * sizeof(tsc);
++                        if (tsc_index <= regs.tex_sampler.limit && gpu_memory->IsFullyMappedRange(tsc_addr, sizeof(tsc)))
++                            gpu_memory->ReadBlockUnsafe(tsc_addr, &tsc, sizeof(tsc));
++                        const VideoCommon::ImageViewId view_id = views[view_pos].id;
++                        const bool has_view = view_id && view_id != VideoCommon::NULL_IMAGE_VIEW_ID;
++                        const GPUVAddr view_addr = has_view ? texture_cache.GetImageView(view_id).gpu_addr : 0;
++                        u64 hash = program * 0x9e3779b97f4a7c15ULL ^ (u64{desc.cbuf_offset} << 32 | index);
++                        for (const u64 word : tsc.raw) hash = (hash ^ word) * 0x100000001b3ULL;
++                        hash = (hash ^ view_addr) * 0x100000001b3ULL;
++                        std::lock_guard lock{depth_log_mutex};
++                        if (depth_log_lines >= 2000) {
++                            depth_log_done.store(true, std::memory_order_relaxed);
++                            continue;
++                        }
++                        if (depth_log_per_program[program] >= 24 || !depth_log_seen.insert(hash).second) continue;
++                        ++depth_log_per_program[program];
++                        ++depth_log_lines;
++                        std::string view_text = "view=null";
++                        if (has_view) {
++                            const auto& view = texture_cache.GetImageView(view_id);
++                            view_text = fmt::format("view=@{:x} image={} f{} t{} {}x{}x{} layers={}+{} levels={}+{} mod={}",
++                                                    view.gpu_addr, view.image_id.index, static_cast<u32>(view.format),
++                                                    static_cast<u32>(view.type), view.size.width, view.size.height,
++                                                    view.size.depth, view.range.base.layer, view.range.extent.layers,
++                                                    view.range.base.level, view.range.extent.levels,
++                                                    view.modification_tick);
++                        }
++                        LOG_INFO(Render_Vulkan,
++                                 "EDEN_DEPTH_SAMPLER stage={} prog={:#x} type={} handle=c{}[{:#x}] elem={} tic={} tsc={} {} "
++                                 "raw={:016x}:{:016x}:{:016x}:{:016x} cmp={} func={} wrap={},{},{} filter={},{},{} "
++                                 "reduction={} lod_clamp={},{} bias={} border={},{},{},{} srgb={}",
++                                 stage, program, static_cast<u32>(desc.type), desc.cbuf_index, desc.cbuf_offset, index,
++                                 views[view_pos].index, tsc_index, view_text, tsc.raw[0], tsc.raw[1], tsc.raw[2],
++                                 tsc.raw[3], tsc.depth_compare_enabled.Value(),
++                                 static_cast<u32>(tsc.depth_compare_func.Value()),
++                                 static_cast<u32>(tsc.wrap_u.Value()), static_cast<u32>(tsc.wrap_v.Value()),
++                                 static_cast<u32>(tsc.wrap_p.Value()), static_cast<u32>(tsc.mag_filter.Value()),
++                                 static_cast<u32>(tsc.min_filter.Value()), static_cast<u32>(tsc.mipmap_filter.Value()),
++                                 static_cast<u32>(tsc.reduction_filter.Value()), tsc.min_lod_clamp.Value(),
++                                 tsc.max_lod_clamp.Value(), tsc.LodBias(), tsc.border_color[0], tsc.border_color[1],
++                                 tsc.border_color[2], tsc.border_color[3], tsc.srgb_conversion.Value());
++                    }
++                }
++                if (stage_has_depth) {
++                    std::lock_guard lock{depth_log_mutex};
++                    if (depth_cbuf_dumped.size() < 32 && depth_cbuf_dumped.insert(program).second) {
++                        const auto& stage_cbufs = maxwell3d->state.shader_stages[stage].const_buffers;
++                        for (u32 slot = 0; slot < stage_cbufs.size(); ++slot) {
++                            const auto& cbuf = stage_cbufs[slot];
++                            if (!(info.constant_buffer_mask & (1U << slot)) || !cbuf.enabled || !cbuf.size) continue;
++                            const u32 size = (std::min)(cbuf.size, 64U * 1024U);
++                            if (!gpu_memory->IsFullyMappedRange(cbuf.address, size)) continue;
++                            if (const auto device_address = gpu_memory->GpuToCpuAddress(cbuf.address))
++                                buffer_cache.DownloadMemory(*device_address, size);
++                            std::vector<u8> bytes(size);
++                            gpu_memory->ReadBlockUnsafe(cbuf.address, bytes.data(), bytes.size());
++                            const std::string path = fmt::format("/data/eden-nx2/logs/depth-cbuf-{}-{:x}-c{}.bin",
++                                                                 stage, program, slot);
++                            std::ofstream(path, std::ios::binary)
++                                .write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
++                            LOG_INFO(Render_Vulkan, "EDEN_DEPTH_CBUF stage={} prog={:#x} c{} addr={:#x} size={} used={} file={}",
++                                     stage, program, slot, cbuf.address, cbuf.size,
++                                     info.constant_buffer_used_sizes[slot], path);
++                        }
++                    }
++                }
++                for (const auto& desc : info.image_descriptors) {
++                    if constexpr (Spec::has_images) view_pos += desc.count;
++                }
++            }
++        }
++    }
++#endif
+     // EDEN_DRAW_TEXTURE_LOG=1: creating draw-textures.request logs the next 20000 draws once, with
+     // each sampled view's format, type, size, layers, address and how much of its first page is
+     // non-zero in guest memory (meaningful for textures the CPU or DMA filled).

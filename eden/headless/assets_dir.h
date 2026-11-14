@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The game files folder: keys/, firmware/ and roms/ in the folder chosen in Settings > Game
 // files (/data/eden-nx2 by default).
-// Resolved once per process; a new choice applies when ProsperoEden is reopened. Where the rest
+// Resolved once per process; a new choice applies when DirkuLator is reopened. Where the rest
 // lives: storage_paths.h; what is saved: settings_store.h.
 #pragma once
 #include <string>

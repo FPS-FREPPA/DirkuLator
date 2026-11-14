@@ -1,0 +1,238 @@
+From the 021 console run. Most lost draws came from shaders whose texture handle is one word of a
+wider load, which the draw-time handle programs did not cover, so the search they fell back to threw
+and the pipeline was lost. Handle programs now read words of 3- and 4-word loads and of assembled
+vectors, drop the words of a path that failed, and a handle that still cannot be computed samples
+handle 0 instead of losing the pipeline. The 2D gather also takes depth compare. The texture decoder
+no longer ends the session when a large block is refused: it asks for a collection, retries for 3 s
+and then leaves that texture blank.
+
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -2407,9 +2407,14 @@
+                          250 + component);
+                 break;
+             }
++            // Depth compare (a shadow lookup): the coordinates are the pair at A, the reference is
++            // B, which is how TLD4S takes them too.
++            const bool gather_depth = insn.Bits(78, 1) != 0;
+             if (insn.Bits(59, 1) || !insn.Bits(60, 1) || insn.Bits(61, 3) != 1 ||
+-                !mask || insn.Bits(76, 5) || insn.Bits(81, 3) != 7 ||
++                !mask || insn.Bits(76, 2) || insn.Bits(79, 2) || insn.Bits(81, 3) != 7 ||
+                 insn.Bits(89, 1) || insn.Bits(91, 1) || binding >= 18 || offset > 0x1fff ||
++                (gather_depth && ((insn.Bits(24, 8) & 1) || insn.Bits(24, 8) + 1 >= reserved_register ||
++                                  insn.Bits(32, 8) >= reserved_register)) ||
+                 (insn.Bits(24, 8) >= reserved_register && insn.Bits(24, 8) != 255) ||
+                 (insn.Bits(32, 8) >= reserved_register && insn.Bits(32, 8) != 255) ||
+                 dest >= reserved_register || (count > 1 && ((dest & 1) || dest + 1 >= reserved_register)) ||
+@@ -2422,7 +2427,7 @@
+             emit(0xdf00000000000000ULL | predicate | (mask == 15 ? dest : 250) |
+                  (u64{insn.Bits(24, 8)} << 8) | (u64{insn.Bits(32, 8)} << 20) |
+                  (u64{mask == 15 ? second : 252} << 28) | (u64{offset} << 36) |
+-                 (u64{insn.Bits(90, 1)} << 49) | (u64{insn.Bits(87, 2)} << 52));
++                 (u64{insn.Bits(90, 1)} << 49) | (u64{gather_depth} << 50) | (u64{insn.Bits(87, 2)} << 52));
+             if (mask != 15) {
+                 u32 packed{};
+                 for (u32 component = 0; component < 4; ++component) {
+diff --git a/src/shader_recompiler/ir_opt/texture_pass.cpp b/src/shader_recompiler/ir_opt/texture_pass.cpp
+--- a/src/shader_recompiler/ir_opt/texture_pass.cpp
++++ b/src/shader_recompiler/ir_opt/texture_pass.cpp
+@@ -555,6 +555,7 @@
+             return true;
+         }
+         default:
++            g_handle_failure = source->GetOpcode();
+             return false;
+         }
+     };
+@@ -568,10 +569,20 @@
+     case IR::Opcode::GetCbufU32:
+     case IR::Opcode::LoadStorage32:
+         return load_word(inst, 0);
+-    case IR::Opcode::CompositeExtractU32x2: {
++    case IR::Opcode::CompositeExtractU32x2:
++    case IR::Opcode::CompositeExtractU32x3:
++    case IR::Opcode::CompositeExtractU32x4: {
+         const IR::Value element{inst->Arg(1)};
+         if (!element.IsImmediate() || inst->Arg(0).IsImmediate()) return false;
+-        return load_word(inst->Arg(0).InstRecursive(), element.U32() * 4);
++        const IR::Inst* const source{inst->Arg(0).InstRecursive()};
++        switch (source->GetOpcode()) {
++        case IR::Opcode::CompositeConstructU32x2:
++        case IR::Opcode::CompositeConstructU32x3:
++        case IR::Opcode::CompositeConstructU32x4:
++            return BuildHandleProgram(source->Arg(element.U32()), code, budget, block);
++        default:
++            return load_word(source, element.U32() * 4);
++        }
+     }
+     case IR::Opcode::Phi: {
+         // Keep the incoming value that is defined; of two, the one made uniform (the
+@@ -599,9 +610,11 @@
+             }
+             if (!chosen || shuffled) chosen = arg;
+         }
++        const size_t phi_start{code.size()};
+         if (chosen && build(*chosen)) {
+             return true;
+         }
++        code.resize(phi_start);
+         for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+             const IR::Value incoming{inst->Arg(arg)};
+             if (arg == chosen || (!incoming.IsImmediate() && IsUndefined(incoming.InstRecursive()->GetOpcode()))) {
+@@ -610,6 +623,7 @@
+             if (build(arg)) {
+                 return true;
+             }
++            code.resize(phi_start);
+         }
+         return false;
+     }
+@@ -997,6 +1011,25 @@
+             track_addr = TrackCached(inst.Arg(0), env, host_info, block);
+         } catch (const NotImplementedException& error) {
+             const auto* root = inst.Arg(0).TryInstRecursive();
++            if (g_handle_programs && BufferTexture::ContainsLoadedHandle(inst.Arg(0))) {
++                // No way to work this handle out: sample with handle 0 for this draw instead of
++                // losing the pipeline and every draw that uses it.
++                std::vector<u32> code{static_cast<u32>(HandleOp::Immediate), 0U};
++                auto& programs{*g_handle_programs};
++                auto it{std::ranges::find(programs, code)};
++                if (it == programs.end()) {
++                    programs.push_back(std::move(code));
++                    it = programs.end() - 1;
++                }
++                addr.count = 1;
++                addr.handle_program = static_cast<u32>(it - programs.begin());
++                static std::atomic<u32> handle_zeroes{};
++                if (const u32 count = ++handle_zeroes; count <= 32) {
++                    std::fprintf(stderr, "EDEN_TEXTURE_HANDLE_ZERO root=%s count=%u\n",
++                                 root ? std::string(IR::NameOf(root->GetOpcode())).c_str() : "immediate", count);
++                }
++                return TextureInst{addr, &inst, block};
++            }
+             throw NotImplementedException("Texture handle expression {} after {} buffer references: {}",
+                 root ? IR::NameOf(root->GetOpcode()) : "immediate", buffer_references, error.what());
+         }
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -8,6 +8,9 @@
+ 
+ #include "video_core/native_diagnostics.h"
+ #include "video_core/native_texture_capture.h"
++#include <chrono>
++#include <new>
++#include <thread>
+ #include <algorithm>
+ #include <chrono>
+ #include <cstdlib>
+@@ -466,6 +469,9 @@
+         gc_deletes = gc_costly_deletes = gc_download_deletes = async_decodes_queued = 0;
+         images_created = images_deleted = 0;
+     }
++    if (decode_memory_refused.exchange(false, std::memory_order_relaxed)) {
++        reclaim_requested = true;
++    }
+     if (std::exchange(reclaim_requested, false)) {
+         // Graphics memory was refused since the last frame (ReclaimMemory): collect as if 1 GiB
+         // over the critical mark, so the aggressive pass frees up to 1 GiB of unused images.
+@@ -2133,7 +2139,17 @@
+     decode->generation = ++image.async_decode_generation;
+     async_decodes.push_back(std::move(decode));
+ 
+-    std::vector<u8> local_unswizzle_data_buffer(image.unswizzled_size_bytes, 0);
++    std::vector<u8> local_unswizzle_data_buffer;
++    try {
++        local_unswizzle_data_buffer.assign(image.unswizzled_size_bytes, 0);
++    } catch (const std::bad_alloc&) {
++        LOG_ERROR(HW_GPU, "No memory to read a {}-byte texture at {:#x}: left blank",
++                  image.unswizzled_size_bytes, image.gpu_addr);
++        reclaim_requested = true;
++        image.flags &= ~ImageFlagBits::IsDecoding;
++        async_decodes.pop_back();
++        return;
++    }
+     auto copies = UnswizzleImage(*gpu_memory, image.gpu_addr, image.info, {},
+                                 local_unswizzle_data_buffer, &swizzle_data_buffer);
+     const size_t out_size = MapSizeBytes(image);
+@@ -2150,7 +2166,7 @@
+         runtime.InsertUploadMemoryBarrier();
+     }
+ 
+-    auto func = [out_size, copies, info = image.info,
++    auto func = [this, out_size, copies, info = image.info,
+                  input = std::move(local_unswizzle_data_buffer),
+                  async_decode = decode_ptr]() mutable {
+         if (async_decode->cancelled.load(std::memory_order_relaxed)) {
+@@ -2158,13 +2174,33 @@
+             async_decode->complete = true;
+             return;
+         }
+-        async_decode->decoded_data.resize_destructive(out_size);
+-        std::span copies_span{copies.data(), copies.size()};
+-        ConvertImage(input, info, async_decode->decoded_data, copies_span);
++        // A world load can leave no block big enough for a moment. Ask for a collection and give
++        // it up to 3 s; after that the texture stays blank, which a game survives.
++        auto converted = copies;
++        bool decoded = false;
++        for (int attempt = 0; attempt < 30 && !decoded; ++attempt) {
++            if (async_decode->cancelled.load(std::memory_order_relaxed)) {
++                break;
++            }
++            try {
++                converted = copies; // ConvertImage rewrites them
++                async_decode->decoded_data.resize_destructive(out_size);
++                std::span copies_span{converted.data(), converted.size()};
++                ConvertImage(input, info, async_decode->decoded_data, copies_span);
++                decoded = true;
++            } catch (const std::bad_alloc&) {
++                decode_memory_refused.store(true, std::memory_order_relaxed);
++                std::this_thread::sleep_for(std::chrono::milliseconds(100));
++            }
++        }
++        if (!decoded && !async_decode->cancelled.load(std::memory_order_relaxed)) {
++            LOG_ERROR(HW_GPU, "No memory to decode a {}-byte texture: left blank", out_size);
++        }
+ 
+         // TODO: Do we need this lock?
+         std::unique_lock lock{async_decode->mutex};
+-        async_decode->copies = std::move(copies);
++        async_decode->copies = std::move(converted);
++        async_decode->failed = !decoded;
+         async_decode->complete = true;
+     };
+     texture_decode_worker.QueueWork(std::move(func));
+@@ -2209,6 +2245,11 @@
+             i = async_decodes.erase(i);
+             continue;
+         }
++        if (async_decode->failed) {
++            image.flags &= ~ImageFlagBits::IsDecoding;
++            i = async_decodes.erase(i);
++            continue;
++        }
+         if (async_decode->decoded_data.size() > MapSizeBytes(image)) {
+             LOG_ERROR(HW_GPU, "Async decode of {} bytes for a {}-byte image at {:#x}, dropped",
+                       async_decode->decoded_data.size(), MapSizeBytes(image), image.gpu_addr);
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -72,6 +72,8 @@
+     boost::container::small_vector<BufferImageCopy, 16> copies;
+     std::mutex mutex;
+     std::atomic_bool complete;
++    // The console had no memory for it: the image keeps the blank contents it was given.
++    bool failed{};
+     // Cache mutations set cancellation; the worker can skip superseded work before converting.
+     std::atomic_bool cancelled{};
+ };
+@@ -605,6 +607,8 @@
+     std::unordered_map<u64, u64> block_image_bytes;
+     u64 frame_tick = 0;
+ 
++    // Set by the decode worker when refused memory; the next frame then collects hard.
++    std::atomic_bool decode_memory_refused{};
+     Common::ThreadWorker texture_decode_worker{1, "TextureDecoder", {},
+                                                Common::ThreadPlacement::Efficiency};
+     std::vector<std::unique_ptr<AsyncDecodeContext>> async_decodes;

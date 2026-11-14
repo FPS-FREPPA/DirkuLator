@@ -1,4 +1,4 @@
-// ProsperoEden - RGBA images for textures: image files, TGA files and box downsampling.
+// DirkuLator - RGBA images for textures: image files, TGA files and box downsampling.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

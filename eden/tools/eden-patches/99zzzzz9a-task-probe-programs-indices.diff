@@ -1,0 +1,180 @@
+DirkuLator 0.5: diagnostic only (no rendering change). EDEN_TASK_PROBE names the probed draw's stage program addresses
+(match eden_log "Lowered native shader at" for keys) and describes bad primitive indices (groups, largest index, ranges,
+first bad triple) plus raw index/position words of the first decoded group. For the 12-task canopy draws of 0.4.
+
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -230,11 +230,15 @@
+     constexpr u64 args_bytes{Shader::Backend::SPIRV::MESH_EMULATION_ARGS_WORDS * 4};
+     task_probe.args_copy = staging_pool.Request(args_bytes, MemoryUsage::Download);
+     task_probe.output_copy = staging_pool.Request(task_probe.output_bytes, MemoryUsage::Download);
++    task_probe.payload_copy = staging_pool.Request((std::max)(task_probe.payload_bytes, u64{16}),
++                                                   MemoryUsage::Download);
+     scheduler.RequestOutsideRenderPassOperationContext();
+     scheduler.Record([arena = task_probe.arena, args_source = task_probe.args_source,
+                       args_offset = task_probe.args_offset, args_copy = task_probe.args_copy,
+                       output_copy = task_probe.output_copy,
+-                      bytes = task_probe.output_bytes](vk::CommandBuffer cmdbuf) {
++                      bytes = task_probe.output_bytes, payload_source = task_probe.payload_source,
++                      payload_offset = task_probe.payload_offset, payload_copy = task_probe.payload_copy,
++                      payload_bytes = task_probe.payload_bytes](vk::CommandBuffer cmdbuf) {
+         const VkMemoryBarrier written{
+             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+             .pNext = nullptr,
+@@ -246,6 +250,10 @@
+         cmdbuf.CopyBuffer(args_source, args_copy.buffer,
+                           VkBufferCopy{args_offset, args_copy.offset, args_bytes});
+         cmdbuf.CopyBuffer(arena, output_copy.buffer, VkBufferCopy{0, output_copy.offset, bytes});
++        if (payload_source != VK_NULL_HANDLE && payload_bytes != 0) {
++            cmdbuf.CopyBuffer(payload_source, payload_copy.buffer,
++                              VkBufferCopy{payload_offset, payload_copy.offset, payload_bytes});
++        }
+         const VkMemoryBarrier copied{
+             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+             .pNext = nullptr,
+@@ -290,11 +298,16 @@
+         return result;
+     };
+     u64 triangles{}, degenerate{}, bad_index{}, nan{}, behind{}, outside_xy{}, outside_z{}, kept{};
++    // 0.5: what the bad indices look like.
++    u64 bad_groups{}, bad_below_128{}, bad_below_256{}, bad_above{};
++    u32 max_index{};
++    std::string first_bad;
+     f32 min_x{1e30f}, max_x{-1e30f}, min_y{1e30f}, max_y{-1e30f}, min_z{1e30f}, max_z{-1e30f};
+     std::string sample;
+     for (u32 group = 0; group < groups; ++group) {
+         const u64 block{base + u64{group} * probe.block_words};
+         const u64 index_base{block + u64{probe.max_vertices} * probe.vertex_lines};
++        const u64 bad_before{bad_index};
+         for (u32 primitive = 0; primitive < probe.max_primitives; ++primitive) {
+             const std::array<u32, 3> indices{word(index_base + primitive * 3),
+                                              word(index_base + primitive * 3 + 1),
+@@ -307,6 +320,13 @@
+             if (indices[0] >= probe.max_vertices || indices[1] >= probe.max_vertices ||
+                 indices[2] >= probe.max_vertices) {
+                 ++bad_index;
++                const u32 largest{(std::max)({indices[0], indices[1], indices[2]})};
++                max_index = (std::max)(max_index, largest);
++                ++(largest < 128 ? bad_below_128 : largest < 256 ? bad_below_256 : bad_above);
++                if (first_bad.empty()) {
++                    first_bad = fmt::format("g{} p{} ({:#x} {:#x} {:#x})", group, primitive, indices[0],
++                                            indices[1], indices[2]);
++                }
+                 continue;
+             }
+             bool any_nan{}, all_behind{true}, any_inside_xy{}, any_inside_z{};
+@@ -349,14 +369,56 @@
+                 ++kept;
+             }
+         }
++        bad_groups += bad_index != bad_before ? 1 : 0;
++    }
++    // 0.5: raw words of decoded group 0, the first 8 primitives' indices and 2 vertices' positions.
++    std::string raw;
++    if (groups != 0) {
++        const u64 index_base{base + u64{probe.max_vertices} * probe.vertex_lines};
++        for (u32 primitive = 0; primitive < (std::min)(probe.max_primitives, 8U); ++primitive) {
++            raw += fmt::format(" {:x},{:x},{:x}", word(index_base + primitive * 3),
++                               word(index_base + primitive * 3 + 1), word(index_base + primitive * 3 + 2));
++        }
++        raw += " | pos";
++        for (u32 vertex = 0; vertex < (std::min)(probe.max_vertices, 2U); ++vertex) {
++            for (u32 element = 0; element < 4; ++element) {
++                const u32 pline{probe.position_lines[element]};
++                raw += fmt::format(" {:08x}",
++                                   pline == ~0U ? 0U : word(base + u64{vertex} * probe.vertex_lines + pline));
++            }
++            raw += " ;";
++        }
+     }
+     const std::string line{fmt::format(
+         "EDEN_TASK_PROBE n={} kind={} tasks={} dispatched={} requested={} base={} decoded_groups={} "
+         "triangles={} unused_slots={} bad_index={} nan={} behind={} offscreen_xy={} outside_depth={} kept={} "
+-        "ndc x[{:.3g},{:.3g}] y[{:.3g},{:.3g}] z[{:.3g},{:.3g}] target: {} sample:{}\n",
++        "ndc x[{:.3g},{:.3g}] y[{:.3g},{:.3g}] z[{:.3g},{:.3g}] target: {} sample:{} "
++        "bad: groups={} max={:#x} lt128={} lt256={} ge256={} first={} raw:{}\n",
+         ++task_probe.number, probe.shadow ? "shadow" : "view", probe.tasks, dispatched, requested, base,
+         groups, triangles, degenerate, bad_index, nan, behind, outside_xy, outside_z, kept, min_x, max_x,
+-        min_y, max_y, min_z, max_z, probe.target, sample)};
++        min_y, max_y, min_z, max_z, probe.target, sample, bad_groups, max_index, bad_below_128,
++        bad_below_256, bad_above, first_bad.empty() ? std::string{"-"} : first_bad, raw)};
++    // 0.5: the first tasks' payload words (word 1 = mesh workgroup count, then what the mesh
++    // workgroups read, e.g. meshlet ids), and the sum of the counts over all tasks.
++    std::string payload;
++    u64 count_sum{};
++    if (probe.payload_stride != 0) {
++        const u32 stride{probe.payload_stride};
++        for (u32 task = 0; task < probe.tasks; ++task) {
++            count_sum += span_word(probe.payload_copy, probe.payload_bytes, u64{task} * stride + 1);
++        }
++        for (u32 task = 0; task < (std::min)(probe.tasks, 3U); ++task) {
++            payload += fmt::format(" t{}:", task);
++            for (u32 index = 0; index < (std::min)(stride, 16U); ++index) {
++                payload += fmt::format(
++                    " {:x}", span_word(probe.payload_copy, probe.payload_bytes, u64{task} * stride + index));
++            }
++        }
++    }
++    const std::string payload_line{fmt::format("EDEN_TASK_PAYLOAD n={} stride={} count_sum={} dispatched={}{}\n",
++                                               task_probe.number, probe.payload_stride, count_sum,
++                                               dispatched, payload)};
++    std::fputs(payload_line.c_str(), stderr);
+     std::fputs(line.c_str(), stderr);
+ }
+ 
+@@ -832,13 +894,18 @@
+             const MeshEmulationSetup* const probe_setup{pipeline->MeshEmulation()};
+             if (counted_arena.task_draws == 1 && !task_probe.copy_pending && !task_probe.read_pending &&
+                 probe_frame >= next_probe_frame && probe_setup && probe_setup->block_words != 0 &&
+-                (want_shadow ? shadow_target : view_target)) {
++                (want_shadow ? shadow_target
++                             : view_target && (groups >= 8 || probe_frame >= next_probe_frame + 120))) {
+                 next_probe_frame = probe_frame + 30;
+                 want_shadow = !want_shadow;
+                 const auto& vp{probe_regs.viewport_transform[0]};
+                 task_probe.arena = *arena.buffer;
+                 task_probe.args_source = args.buffer;
+                 task_probe.args_offset = args.offset;
++                task_probe.payload_source = payload.buffer;
++                task_probe.payload_offset = payload.offset;
++                task_probe.payload_bytes = (std::min)(u64{payload.size}, u64{64} << 10);
++                task_probe.payload_stride = pipeline->MeshEmulationPayloadStride();
+                 task_probe.output_bytes = (std::min)(bytes, u64{4} << 20);
+                 task_probe.tasks = groups;
+                 task_probe.block_words = probe_setup->block_words;
+@@ -861,6 +928,18 @@
+                     static_cast<s32>(probe_setup->position_lines[1]),
+                     static_cast<s32>(probe_setup->position_lines[2]),
+                     static_cast<s32>(probe_setup->position_lines[3]));
++                // 0.5: each enabled stage's native program address, as eden_log's "Lowered native
++                // shader at" lines print it (with the program key).
++                task_probe.target += " programs:";
++                for (size_t stage = 0; stage < Maxwell::MaxShaderProgram; ++stage) {
++                    if (!probe_regs.IsShaderConfigEnabled(stage)) {
++                        continue;
++                    }
++                    const auto& config{probe_regs.pipelines[stage]};
++                    task_probe.target += fmt::format(
++                        " {}={:#x}", stage,
++                        (static_cast<u64>(config.reserved[0] & 0xff) << 32) | config.reserved[1]);
++                }
+                 task_probe.copy_pending = true;
+             }
+             mesh_emulation_indirect = {args.buffer, args.offset};
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -295,6 +295,12 @@
+         u32 max_primitives{};
+         std::array<u32, 4> position_lines{};
+         std::string target;
++        // 0.5: the task payload buffer (per task workgroup: payload_stride words, count at word 1).
++        VkBuffer payload_source{};
++        u64 payload_offset{};
++        u64 payload_bytes{};
++        u32 payload_stride{};
++        StagingBufferRef payload_copy{};
+         u32 number{};
+         bool shadow{};
+         bool copy_pending{};

@@ -29,6 +29,149 @@ int64_t sceKernelGetDirectMemorySize(void);
 #define EDEN_DIRECT_STEP ((int64_t)2 << 20)       /* blocks at the top are placed in 2 MiB steps */
 #define EDEN_DIRECT_SMALL ((size_t)2 << 20)       /* a thread's stack; the driver's zero block */
 
+/* ---- 041: who takes the pool, event by event ----
+ * In 040 the pool lost ~723 MiB between the last 1 s sample (256.3 s) and the crash (257 s), of
+ * which new guest backing explained ~371 MiB. Every direct allocation and release of the app goes
+ * through here (the link wraps the calls; the heap and the guest's slots call the real function
+ * from eden_direct_high/low below), so each is recorded in a ring that never allocates: sequence,
+ * time, kind, start, size, the path it took, its caller and the app's running total. The memory
+ * report prints new events every second (eden_direct_events_print) and the crash report the last
+ * ones (eden_direct_events_format, no C library formatting). What the pool has lost beyond the
+ * app's running total belongs to callers outside the link (system libraries). */
+#include <stdio.h>
+#include <time.h>
+extern const char __eden_text_start[] __attribute__((weak));
+extern const char __eden_text_end[] __attribute__((weak));
+enum { EDEN_DMEM_ALLOC = 1, EDEN_DMEM_RELEASE = 2, EDEN_DMEM_FAILED = 3 };
+enum { EDEN_DMEM_WRAP = 0, EDEN_DMEM_HIGH = 1, EDEN_DMEM_LOW = 2 }; /* the path: link wrap, heap/kept, guest */
+#define EDEN_DMEM_EVENTS 4096u
+struct eden_dmem_event {
+  _Atomic uint64_t seq; /* 0: never written; set last */
+  int64_t ns;
+  int64_t start;
+  uint64_t size;
+  uint64_t caller;      /* offset from __eden_text_start; 0 unknown */
+  uint32_t deep[3];     /* 043: further code addresses on the stack (who asked the caller), offsets */
+  int64_t held;         /* the app's direct memory after the event */
+  uint8_t kind, path;
+};
+static struct eden_dmem_event eden_dmem_events[EDEN_DMEM_EVENTS];
+static _Atomic uint64_t eden_dmem_next;
+static _Atomic int64_t eden_dmem_held;
+static uint64_t eden_dmem_printed; /* the memory report's thread only */
+
+static void eden_dmem_record(int kind, int path, int64_t start, size_t size, const void *caller) {
+  int64_t held = atomic_load_explicit(&eden_dmem_held, memory_order_relaxed);
+  if (kind == EDEN_DMEM_ALLOC)
+    held = atomic_fetch_add_explicit(&eden_dmem_held, (int64_t)size, memory_order_relaxed) + (int64_t)size;
+  else if (kind == EDEN_DMEM_RELEASE)
+    held = atomic_fetch_sub_explicit(&eden_dmem_held, (int64_t)size, memory_order_relaxed) - (int64_t)size;
+  if (size < ((size_t)1 << 20) && kind != EDEN_DMEM_FAILED)
+    return; /* counted, not listed */
+  const uint64_t seq = atomic_fetch_add_explicit(&eden_dmem_next, 1, memory_order_relaxed) + 1;
+  struct eden_dmem_event *event = &eden_dmem_events[seq % EDEN_DMEM_EVENTS];
+  atomic_store_explicit(&event->seq, 0, memory_order_relaxed);
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  event->ns = (int64_t)now.tv_sec * 1000000000ll + now.tv_nsec;
+  event->start = start;
+  event->size = size;
+  const uintptr_t text = (uintptr_t)__eden_text_start, at = (uintptr_t)caller;
+  event->caller = __eden_text_start != NULL && at >= text ? at - text : 0;
+  event->held = held;
+  /* 043: the driver's allocations all come from one function; a few more code addresses above this
+   * frame tell which of the app's paths asked (texture upload, staging, VMA block...). */
+  event->deep[0] = event->deep[1] = event->deep[2] = 0;
+  if (__eden_text_start != NULL && __eden_text_end != NULL) {
+    const uintptr_t end = (uintptr_t)__eden_text_end;
+    const uintptr_t *stack = (const uintptr_t *)__builtin_frame_address(0);
+    for (int w = 0, found = 0; w < 96 && found < 3; ++w)
+      if (stack[w] >= text && stack[w] < end && stack[w] - text != event->caller)
+        event->deep[found++] = (uint32_t)(stack[w] - text);
+  }
+  event->kind = (uint8_t)kind;
+  event->path = (uint8_t)path;
+  atomic_store_explicit(&event->seq, seq, memory_order_release);
+}
+
+int64_t eden_direct_events_held(void) { return atomic_load_explicit(&eden_dmem_held, memory_order_relaxed); }
+
+static const char *const eden_dmem_kinds[] = {"?", "alloc", "release", "FAILED"};
+static const char *const eden_dmem_paths[] = {"wrap", "high", "low"};
+
+/* New events since the last call, one EDEN_DMEM line each, on stderr (the memory report's thread). */
+void eden_direct_events_print(void) {
+  const uint64_t last = atomic_load_explicit(&eden_dmem_next, memory_order_acquire);
+  uint64_t seq = eden_dmem_printed + 1;
+  if (last >= EDEN_DMEM_EVENTS && seq + EDEN_DMEM_EVENTS <= last) {
+    fprintf(stderr, "EDEN_DMEM lost=%llu (ring overrun)\n", (unsigned long long)(last - EDEN_DMEM_EVENTS + 1 - seq));
+    seq = last - EDEN_DMEM_EVENTS + 1;
+  }
+  for (; seq <= last; ++seq) {
+    const struct eden_dmem_event *event = &eden_dmem_events[seq % EDEN_DMEM_EVENTS];
+    if (atomic_load_explicit(&event->seq, memory_order_acquire) != seq)
+      continue;
+    fprintf(stderr,
+            "EDEN_DMEM seq=%llu t_ms=%lld %s path=%s start=%#llx size_kib=%llu caller=%#llx held_mib=%lld "
+            "deep=%#x,%#x,%#x\n",
+            (unsigned long long)seq, (long long)(event->ns / 1000000), eden_dmem_kinds[event->kind & 3],
+            eden_dmem_paths[event->path % 3], (unsigned long long)event->start,
+            (unsigned long long)(event->size >> 10), (unsigned long long)event->caller,
+            (long long)(event->held >> 20), event->deep[0], event->deep[1], event->deep[2]);
+  }
+  eden_dmem_printed = last;
+}
+
+/* The last `count` events as text, without the C library (the crash report's handler). */
+static size_t eden_dmem_put(char *out, size_t at, size_t size, const char *text) {
+  while (*text && at + 1 < size) out[at++] = *text++;
+  return at;
+}
+static size_t eden_dmem_number(char *out, size_t at, size_t size, uint64_t value, int hex) {
+  char digits[24];
+  int n = 0;
+  do {
+    const unsigned digit = (unsigned)(value % (hex ? 16 : 10));
+    digits[n++] = (char)(digit < 10 ? '0' + digit : 'a' + digit - 10);
+    value /= hex ? 16 : 10;
+  } while (value != 0 && n < 24);
+  if (hex) at = eden_dmem_put(out, at, size, "0x");
+  while (n > 0 && at + 1 < size) out[at++] = digits[--n];
+  return at;
+}
+size_t eden_direct_events_format(char *out, size_t size, unsigned count) {
+  if (size == 0) return 0;
+  size_t at = 0;
+  const uint64_t last = atomic_load_explicit(&eden_dmem_next, memory_order_acquire);
+  const uint64_t first = last > count ? last - count + 1 : 1;
+  at = eden_dmem_put(out, at, size, "direct memory events (last ");
+  at = eden_dmem_number(out, at, size, last - first + 1, 0);
+  at = eden_dmem_put(out, at, size, "; the app holds ");
+  at = eden_dmem_number(out, at, size, (uint64_t)(eden_direct_events_held() >> 20), 0);
+  at = eden_dmem_put(out, at, size, " MiB):\n");
+  for (uint64_t seq = first; seq <= last && at + 160 < size; ++seq) {
+    const struct eden_dmem_event *event = &eden_dmem_events[seq % EDEN_DMEM_EVENTS];
+    if (atomic_load_explicit(&event->seq, memory_order_acquire) != seq) continue;
+    at = eden_dmem_put(out, at, size, "  #");
+    at = eden_dmem_number(out, at, size, seq, 0);
+    at = eden_dmem_put(out, at, size, " t_ms=");
+    at = eden_dmem_number(out, at, size, (uint64_t)(event->ns / 1000000), 0);
+    at = eden_dmem_put(out, at, size, " ");
+    at = eden_dmem_put(out, at, size, eden_dmem_kinds[event->kind & 3]);
+    at = eden_dmem_put(out, at, size, " ");
+    at = eden_dmem_put(out, at, size, eden_dmem_paths[event->path % 3]);
+    at = eden_dmem_put(out, at, size, " size_kib=");
+    at = eden_dmem_number(out, at, size, event->size >> 10, 0);
+    at = eden_dmem_put(out, at, size, " caller=");
+    at = eden_dmem_number(out, at, size, event->caller, 1);
+    at = eden_dmem_put(out, at, size, " held_mib=");
+    at = eden_dmem_number(out, at, size, (uint64_t)(event->held > 0 ? event->held >> 20 : 0), 0);
+    at = eden_dmem_put(out, at, size, "\n");
+  }
+  out[at] = '\0';
+  return at;
+}
+
 static atomic_flag eden_direct_lock = ATOMIC_FLAG_INIT;
 static int64_t eden_direct_floor;                 /* the lowest block taken at the top; 0: none yet */
 static int64_t eden_direct_holes[1024];           /* 2 MiB blocks given back above the floor */
@@ -40,7 +183,7 @@ static void eden_direct_acquire(void) {
 static void eden_direct_release(void) { atomic_flag_clear_explicit(&eden_direct_lock, memory_order_release); }
 
 /* Memory from as high in the pool as there is room; from anywhere when the top has none. */
-int eden_direct_high(size_t size, size_t alignment, int type, int64_t *start) {
+static int eden_direct_high_raw(size_t size, size_t alignment, int type, int64_t *start) {
   const int64_t total = sceKernelGetDirectMemorySize();
   const int64_t bytes = (int64_t)size;
   if (bytes <= 0 || total <= 0) return __real_sceKernelAllocateDirectMemory(0, total, size, alignment, type, start);
@@ -68,9 +211,20 @@ int eden_direct_high(size_t size, size_t alignment, int type, int64_t *start) {
   return __real_sceKernelAllocateDirectMemory(0, total, size, alignment, type, start);
 }
 
+int eden_direct_high(size_t size, size_t alignment, int type, int64_t *start) {
+  const int result = eden_direct_high_raw(size, alignment, type, start);
+  eden_dmem_record(result == 0 ? EDEN_DMEM_ALLOC : EDEN_DMEM_FAILED, EDEN_DMEM_HIGH, result == 0 && start ? *start : -1,
+                   size, __builtin_return_address(0));
+  return result;
+}
+
 /* As the system places it: for what a session takes and gives back. */
 int eden_direct_low(size_t size, size_t alignment, int type, int64_t *start) {
-  return __real_sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), size, alignment, type, start);
+  const int result =
+      __real_sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), size, alignment, type, start);
+  eden_dmem_record(result == 0 ? EDEN_DMEM_ALLOC : EDEN_DMEM_FAILED, EDEN_DMEM_LOW, result == 0 && start ? *start : -1,
+                   size, __builtin_return_address(0));
+  return result;
 }
 
 /* The Vulkan driver makes its command ring (16 MiB) and, right after it, the ring's marker page
@@ -99,15 +253,25 @@ int __wrap_sceKernelAllocateDirectMemory(int64_t from, int64_t to, size_t size, 
                                          int64_t *start) {
   /* A thread's stack or the driver's zero block, asked for anywhere in the pool; and the
    * driver's command ring and marker page. */
+  const void *caller = __builtin_return_address(0);
+  int result;
+  int path = EDEN_DMEM_WRAP;
   if (from == 0 && start && to >= sceKernelGetDirectMemorySize() &&
-      (size == EDEN_DIRECT_SMALL || eden_direct_driver_keeps(size, __builtin_return_address(0))))
-    return eden_direct_high(size, alignment, type, start);
-  return __real_sceKernelAllocateDirectMemory(from, to, size, alignment, type, start);
+      (size == EDEN_DIRECT_SMALL || eden_direct_driver_keeps(size, caller))) {
+    result = eden_direct_high_raw(size, alignment, type, start);
+    path = EDEN_DMEM_HIGH;
+  } else {
+    result = __real_sceKernelAllocateDirectMemory(from, to, size, alignment, type, start);
+  }
+  eden_dmem_record(result == 0 ? EDEN_DMEM_ALLOC : EDEN_DMEM_FAILED, path, result == 0 && start ? *start : -1, size,
+                   caller);
+  return result;
 }
 
 int __wrap_sceKernelReleaseDirectMemory(int64_t start, size_t size) {
   const int result = __real_sceKernelReleaseDirectMemory(start, size);
   if (result != 0) return result;
+  eden_dmem_record(EDEN_DMEM_RELEASE, EDEN_DMEM_WRAP, start, size, __builtin_return_address(0));
   eden_direct_acquire();
   if (size == EDEN_DIRECT_SMALL && eden_direct_floor != 0 && start >= eden_direct_floor &&
       eden_direct_hole_count < sizeof(eden_direct_holes) / sizeof(eden_direct_holes[0]))

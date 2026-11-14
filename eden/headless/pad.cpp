@@ -160,6 +160,10 @@ bool Pad::Open() {
     const int initial_result = sceUserServiceGetInitialUser(&initial_user);
     LOG_INFO(Input, "EDEN_PAD_USERS foreground={} initial={} initial_rc={}", user, initial_user, initial_result);
     Rescan();
+#ifdef EDEN_PS5_INPUT_BRIDGE
+    if (!input_bridge.Start(std::string{kDataDir}))
+        std::fprintf(stderr, "EDEN_INPUT_BRIDGE unavailable\n");
+#endif
     return true;
 }
 void Pad::OpenSlot(std::size_t player, int user) {
@@ -229,6 +233,7 @@ void Pad::Rescan() {
     }
 }
 void Pad::Close() {
+    input_bridge.Stop();
     engine->ResetControllers();
     u64 haptic_outputs = 0, haptic_errors = 0, haptic_fallbacks = 0;
     for (std::size_t player = 0; player < kMaxPlayers; ++player) {
@@ -258,6 +263,7 @@ void Pad::Close() {
 }
 bool Pad::Poll() {
     if (GameplayTest::Replaying()) {
+        input_bridge.Stop();
         // A recorded session drives the pad instead of the controller (gameplay_test.h). The
         // controller is left alone rather than closed, so the game still has its player 1.
         ++polls;
@@ -291,6 +297,9 @@ bool Pad::Poll() {
         if (player == 0) last_result = count;
         if (count < 0 || count > static_cast<int>(samples.size())) {
             ++read_errors;
+#ifdef EDEN_PS5_INPUT_BRIDGE
+            if (player == 0) input_bridge.Unavailable();
+#endif
             const auto neutral = ps5::pad::neutral_data();
             Consume(player, {&neutral, 1});
             continue;
@@ -301,6 +310,17 @@ bool Pad::Poll() {
             intercepted_samples += (samples[i].buttons & ps5::pad::kButtonIntercepted) != 0;
             circle_samples += ps5::pad::is_usable(samples[i]) && (samples[i].buttons & ps5::pad::kButtonCircle);
         }
+#ifdef EDEN_PS5_INPUT_BRIDGE
+        if (player == 0) {
+            if (count == 0) {
+                auto latest = ps5::pad::neutral_data();
+                if (scePadReadState(handle, &latest) >= 0) input_bridge.Observe(latest);
+                else input_bridge.Unavailable();
+            }
+            const auto bridge_sample = input_bridge.Apply({samples.data(), static_cast<std::size_t>(count)});
+            if (bridge_sample) Consume(player, {&*bridge_sample, 1});
+        }
+#endif
         Consume(player, {samples.data(), static_cast<std::size_t>(count)});
         slots[player].haptics->RetryTick();
         const auto haptic_stats = slots[player].haptics->GetStats();

@@ -24,10 +24,12 @@ struct Level {
 };
 void Staging() {
     using namespace Eden::StagingBuffers;
-    static_assert(!Exact(16 * MiB, true));
-    static_assert(Exact(16 * MiB + 1, true));
+    static_assert(!Exact(4 * MiB, true));
+    static_assert(Exact(4 * MiB + 1, true));
+    static_assert(Size(12 * MiB + 48, 24, true) == 13 * MiB);
     static_assert(!Exact(341 * MiB, false));
-    static_assert(Size(341 * MiB, 29, true) == 352 * MiB);
+    static_assert(Size(341 * MiB, 29, true) == 341 * MiB);
+    static_assert(Size(48 * MiB + 48, 26, true) == 49 * MiB);
     static_assert(Size(341 * MiB, 29, false) == 512 * MiB);
     static_assert(Holds(352 * MiB, 29) < 400 * MiB);
     static_assert(Holds(0, 29) == 512 * MiB);

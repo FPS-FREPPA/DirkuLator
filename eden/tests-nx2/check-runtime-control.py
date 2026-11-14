@@ -8,7 +8,7 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 source = (root / 'headless/profiling_session.cpp').read_text()
 start = source.index('ProfilingSession::ProfilingSession()')
-end = source.index('    if (reports < 36) {', start)
+end = source.index('    if (reports < kRuntimeReports) {', start)
 implementation = source[start:end] + '}\n'
 with tempfile.TemporaryDirectory(prefix='nx2-runtime-control-') as directory:
     temp = Path(directory)

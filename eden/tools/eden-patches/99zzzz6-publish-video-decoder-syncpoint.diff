@@ -1,0 +1,91 @@
+Keep video decoders' counters current in the guest's syncpoint table. The table starts as
+Unallocated and a counter is refreshed only when the guest requests it; nn::syncpt reads Unallocated
+as reached. OoT's movie::VideoDecoder::Flush releases and re-acquires frames for as long as the head
+frame's fence is reached, so with the decoder's counter never requested it looped forever and New
+Game hung (found by disassembling subsdk0 and the sdk). A released image's fence is then unreached
+after a flush, as on the console, and the loop ends. Applies to every title;
+/data/eden-nx2/video-counter-table-off.txt turns it off.
+
+diff --git a/src/core/hle/service/am/service/native_video_decoder.cpp b/src/core/hle/service/am/service/native_video_decoder.cpp
+--- a/src/core/hle/service/am/service/native_video_decoder.cpp
++++ b/src/core/hle/service/am/service/native_video_decoder.cpp
+@@ -19,6 +19,7 @@
+ #include <mutex>
+ #include "core/hle/service/nvdrv/core/syncpoint_manager.h"
+ #include "video_core/host1x/host1x.h"
++#include "core/hle/service/am/service/graphics_syncpoint_cache.h"
+ #include "core/hle/service/am/service/native_video_layout.h"
+ #include "core/hle/service/nvdrv/nvdrv_interface.h"
+ #include "core/hle/service/nvdrv/core/container.h"
+@@ -183,6 +184,7 @@
+         registered_images.clear();
+         if (operation_syncpoint) {
+             CompletePendingFences();
++            GraphicsSyncpointCache::StopPublishing(*operation_syncpoint);
+             state->module->GetContainer().GetSyncpointManager().FreeSyncpoint(*operation_syncpoint);
+             operation_syncpoint.reset();
+         }
+@@ -786,6 +788,12 @@
+                                 if (!operation_syncpoint) {
+                                     auto& syncpoints = state->module->GetContainer().GetSyncpointManager();
+                                     operation_syncpoint = syncpoints.AllocateSyncpoint(true);
++                                    // nn::movie decides with TryWaitSyncPoint when a flush is over:
++                                    // its loop ends at the first fence not reached yet.
++                                    if (std::getenv("EDEN_NX2_VDEC_NO_COUNTER_TABLE") == nullptr) {
++                                        GraphicsSyncpointCache::PublishAlways(*operation_syncpoint);
++                                        LOG_INFO(Service_AM, "EDEN_VDEC_PUBLISH syncpoint={}", *operation_syncpoint);
++                                    }
+                                     const auto current = syncpoints.ReadAllocatedSyncpoint(*operation_syncpoint);
+                                     if (!current) {
+                                         operation_syncpoint.reset();
+diff --git a/src/core/hle/service/am/service/graphics_supervisor.cpp b/src/core/hle/service/am/service/graphics_supervisor.cpp
+--- a/src/core/hle/service/am/service/graphics_supervisor.cpp
++++ b/src/core/hle/service/am/service/graphics_supervisor.cpp
+@@ -2261,6 +2261,15 @@
+     auto& memory = m_process->GetMemory();
+     const auto rw = m_syncpoint_rw->GetSourceAddress();
+     const auto ro = m_syncpoint_ro->GetSourceAddress();
++    for (u32 group = 0; group < GroupCount; ++group) {
++        u64 published = AlwaysPublished[group].load(std::memory_order_relaxed);
++        while (published) {
++            const u32 id = group * 64 + static_cast<u32>(std::countr_zero(published));
++            published &= published - 1;
++            const auto current = m_nv_module->GetContainer().GetSyncpointManager().ReadAllocatedSyncpoint(id);
++            memory.Write64(ro + ValuesOffset + id * sizeof(u64), m_counter_values[id].Observe(current));
++        }
++    }
+     const u64 requests = memory.Read64(rw + GroupRequestOffset);
+     const u64 acknowledgements = memory.Read64(ro + GroupAckOffset);
+     u64 groups = (requests ^ acknowledgements) & ((1ULL << GroupCount) - 1);
+diff --git a/src/core/hle/service/am/service/graphics_syncpoint_cache.h b/src/core/hle/service/am/service/graphics_syncpoint_cache.h
+--- a/src/core/hle/service/am/service/graphics_syncpoint_cache.h
++++ b/src/core/hle/service/am/service/graphics_syncpoint_cache.h
+@@ -4,6 +4,7 @@
+ #pragma once
+ 
+ #include <array>
++#include <atomic>
+ #include <limits>
+ #include <optional>
+ #include "common/common_types.h"
+@@ -35,6 +36,20 @@
+     }
+     return high | current;
+ }
++// Counters kept current in the guest's table without being asked for. A counter nobody requested
++// stays Unallocated there, and nn::syncpt reads Unallocated as "already reached".
++inline std::array<std::atomic<u64>, GroupCount> AlwaysPublished{};
++inline void PublishAlways(u32 id) {
++    if (id < CounterCount) {
++        AlwaysPublished[id / 64].fetch_or(1ULL << (id % 64), std::memory_order_relaxed);
++    }
++}
++inline void StopPublishing(u32 id) {
++    if (id < CounterCount) {
++        AlwaysPublished[id / 64].fetch_and(~(1ULL << (id % 64)), std::memory_order_relaxed);
++    }
++}
++
+ struct CounterValue {
+     u64 previous{Unallocated};
+ 

@@ -118,7 +118,7 @@ jobs:
           if [[ $GITHUB_EVENT_NAME == pull_request ]]; then
             echo "artifact=${GITHUB_REPOSITORY##*/}-PR$PR_NUMBER-${PR_HEAD:0:7}" >> "$GITHUB_OUTPUT"
           else
-            echo "artifact=ProsperoEden" >> "$GITHUB_OUTPUT"
+            echo "artifact=DirkuLator" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Restore downloads
@@ -224,7 +224,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          python3 - ProsperoEden-v*.zip <<'PY'
+          python3 - DirkuLator-v*.zip <<'PY'
           import json, sys, zipfile
           assert len(sys.argv) == 2, f"expected one ZIP: {sys.argv[1:]}"
           archive = sys.argv[1]
@@ -235,7 +235,7 @@ jobs:
               wrong = [i.filename for i in z.infolist() if (i.external_attr >> 16) & 0o777 != 0o777]
               assert not wrong, f"entries not stored as 0777: {wrong[:3]}"
               version = json.loads(z.read("PPSA99862/sce_sys/param.json"))["contentVersion"]
-              assert archive == f"ProsperoEden-v{version.removeprefix('0')}.zip", (archive, version)
+              assert archive == f"DirkuLator-v{version.removeprefix('0')}.zip", (archive, version)
               print(f"{archive}: {len(names)} entries, all 0777, version {version}")
           PY
           sha256sum -c SHA256SUMS
@@ -274,7 +274,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: ProsperoEden
+          name: DirkuLator
           path: dist
 
       - name: Publish the pre-release
@@ -286,7 +286,7 @@ jobs:
           if ! assets=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null); then
             # No release yet: this run makes it.
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \
-              --title "ProsperoEden $GITHUB_REF_NAME" --notes-file dist/release-notes.md \
+              --title "DirkuLator $GITHUB_REF_NAME" --notes-file dist/release-notes.md \
               "dist/ProsperoEden-$GITHUB_REF_NAME.zip" dist/SHA256SUMS
           elif grep -qi '\.zip$' <<< "$assets"; then
             # A published ZIP is never replaced or deleted: the catalog at homebrew.page records

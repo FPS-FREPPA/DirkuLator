@@ -1,0 +1,102 @@
+DirkuLator 0.4: mesh/task emulation fixes from Lichii (2026-11-12). (1) db7a53c1e/#1452: hold the draw's mesh-emulation
+staging buffers until its commands are recorded and free them at that tick; mark the task arena used by the writing
+submission. (2) 4765047cd/#1492 extended to the compute fallback: every task invocation zeroes the mesh workgroup count
+(payload word 1) at entry. Diagnostics of 0.2/0.3 kept.
+
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
+@@ -347,6 +347,11 @@
+     // No branches here: the entry block's label is a phi predecessor for later blocks.
+     const bool as_compute{ctx.runtime_info.mesh_as_compute};
+     if (ctx.stage == Stage::Task) {
++        // A task that never writes its mesh workgroup count (all its threads culled, or a path without
++        // the store) must launch none: the payload starts undefined. Every invocation stores the zero
++        // (upstream 8e87cf5a66, Lichii #1492; the compute fallback copies this word in ComputeTaskEpilogue).
++        ctx.OpStore(PayloadWord(ctx, ctx.Const(1U)), ctx.u32_zero_value);
++        Barrier(ctx);
+         if (!as_compute) {
+             return;
+         }
+diff --git a/src/shader_recompiler/frontend/ampere/native.h b/src/shader_recompiler/frontend/ampere/native.h
+--- a/src/shader_recompiler/frontend/ampere/native.h
++++ b/src/shader_recompiler/frontend/ampere/native.h
+@@ -43,7 +43,7 @@
+ 
+ // Salt mixed into the pipeline cache identity of native-translated programs. Bump it whenever the
+ // native translation changes so cached results of an older translator are never reused.
+-inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a00012ULL;
++inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a00013ULL;
+ 
+ // Maxwell Location offset of native instruction `index` (same mapping the lowering uses).
+ [[nodiscard]] constexpr u32 LocationOf(u32 index) {
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -360,6 +360,17 @@
+     std::fputs(line.c_str(), stderr);
+ }
+ 
++void RasterizerVulkan::ReleaseMeshEmulationBuffers() {
++    for (StagingBufferRef& ref : mesh_draw_buffers) {
++        staging_pool.FreeDeferred(ref);
++    }
++    mesh_draw_buffers.clear();
++    if (mesh_arena_used) {
++        mesh_arena_used = false;
++        mesh_arenas[mesh_arena_current].tick = scheduler.CurrentTick();
++    }
++}
++
+ const RasterizerVulkan::MeshArena& RasterizerVulkan::AcquireMeshArena() {
+     const u64 tick{scheduler.CurrentTick()};
+     if (mesh_arena_current < mesh_arenas.size() && mesh_arenas[mesh_arena_current].tick == tick) {
+@@ -567,6 +578,9 @@
+ 
+ template <typename Func>
+ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, u32 direct_instances) {
++    SCOPE_EXIT {
++        ReleaseMeshEmulationBuffers();
++    };
+     // 048: EDEN_TASK_PROBE. The probed draw's dispatches were recorded by the previous draw; copy
+     // its output now, and read a finished copy before staging buffers are handed out again.
+     if (task_probe.read_pending && scheduler.IsFree(task_probe.tick)) {
+@@ -777,17 +791,20 @@
+         u64 bytes{};
+         if (has_task) {
+             const MeshArena& arena{AcquireMeshArena()};
++            mesh_arena_used = true;
+             bytes = arena.size;
+             pipeline->SetMeshEmulationOutput(*arena.buffer, 0, bytes, groups);
+         } else {
+             bytes = (std::max)(u64{groups} * block_bytes, u64{4});
+-            const StagingBufferRef output{staging_pool.Request(bytes, MemoryUsage::DeviceLocal)};
++            const StagingBufferRef output{staging_pool.Request(bytes, MemoryUsage::DeviceLocal, true)};
++            mesh_draw_buffers.push_back(output);
+             pipeline->SetMeshEmulationOutput(output.buffer, output.offset, bytes, groups);
+         }
+         if (has_task && groups != 0) {
+             const auto request = [&](u64 size) {
+                 size = (std::max)(size, u64{16});
+-                const StagingBufferRef ref{staging_pool.Request(size, MemoryUsage::DeviceLocal)};
++                const StagingBufferRef ref{staging_pool.Request(size, MemoryUsage::DeviceLocal, true)};
++                mesh_draw_buffers.push_back(ref);
+                 return GraphicsPipeline::MeshEmulationBuffer{ref.buffer, ref.offset, size};
+             };
+             const auto payload{request(u64{groups} * pipeline->MeshEmulationPayloadStride() * 4)};
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -273,6 +273,12 @@
+     u64 mesh_arena_size{64ULL << 20};
+     /// The current submission's arena, after its counter is reset.
+     const MeshArena& AcquireMeshArena();
++    /// Mesh emulation: the draw's staging buffers, held until its commands are recorded (Lichii #1452).
++    /// Configure can submit (an ASTC decode, a full descriptor buffer ring), so the tick when they were
++    /// requested may be older than the submission that writes them.
++    boost::container::static_vector<StagingBufferRef, 4> mesh_draw_buffers;
++    bool mesh_arena_used{};
++    void ReleaseMeshEmulationBuffers();
+     /// 048: EDEN_TASK_PROBE, one emulated task draw's arguments and output read back.
+     struct TaskProbe {
+         VkBuffer arena{};

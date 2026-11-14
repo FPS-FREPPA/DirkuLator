@@ -457,6 +457,9 @@ if(PS5_NATIVE)
     string(REPLACE "    PerfMapRegister(entrypoint, code.getCurr(), LocationDescriptorToFriendlyName(descriptor));"
         "" emitter "${emitter}")
 endif()
+if(PS5_NATIVE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    eden_fast_paths_emit_cond()
+endif()
 write_derived("${PORT_BUILD_DIR}/emit_x64.cpp" "${emitter}")
 get_target_property(jit_sources dynarmic SOURCES)
 list(FILTER jit_sources EXCLUDE REGEX "(^|/)emit_x64\\.cpp$")
@@ -697,7 +700,7 @@ endif()
 string(REPLACE "${ordered_read_old}" [=[const void* EmitReadMemoryMov(BlockOfCode& code, int value_idx, const Xbyak::RegExp& addr, bool ordered) {
     if (ordered && (bitsize == 128 || !__atomic_load_n(&eden_plain_ordered_reads, __ATOMIC_RELAXED))) {
 ]=] memory_emitter "${memory_emitter}")
-string(REPLACE "#pragma once\n" "#pragma once\nextern \"C\" bool eden_plain_ordered_reads;  // ProsperoEden (CMakeLists.txt, ordered reads)\n"
+string(REPLACE "#pragma once\n" "#pragma once\nextern \"C\" bool eden_plain_ordered_reads;  // DirkuLator (CMakeLists.txt, ordered reads)\n"
     memory_emitter "${memory_emitter}")
 write_derived("${PORT_BUILD_DIR}/include/${memory_relative}" "${memory_emitter}")
 # New include overlays do not invalidate objects whose depfile still names
@@ -1409,7 +1412,7 @@ if(PS5_NATIVE)
 #error Review PS5 NSO layout-only loading before enabling NCE
 #endif
     if (!load_into_process) return load_base + final_size;
-    std::fprintf(stderr, "[ProsperoEden] NSO %s image_bytes=%llu bss_bytes=%u\n",
+    std::fprintf(stderr, "[DirkuLator] NSO %s image_bytes=%llu bss_bytes=%u\n",
                  nso_file.GetName().c_str(), static_cast<unsigned long long>(final_size),
                  static_cast<unsigned>(last_segment_it->bss_size));
     Kernel::CodeSet codeset;
@@ -1500,7 +1503,7 @@ if(PS5_NATIVE)
             char build[17]{};
             for (int i = 0; i < 8; ++i)
                 std::snprintf(build + i * 2, 3, "%02X", static_cast<unsigned>(nso_header.build_id[i]));
-            std::fprintf(stderr, "[ProsperoEden] cheats: %zu entries for main (build ID %s) at %#llx (%llu bytes)\n",
+            std::fprintf(stderr, "[DirkuLator] cheats: %zu entries for main (build ID %s) at %#llx (%llu bytes)\n",
                          cheats.size(), build, static_cast<unsigned long long>(load_base),
                          static_cast<unsigned long long>(image_size));
         }
@@ -2294,7 +2297,7 @@ if(npad_update_at LESS 0)
     message(FATAL_ERROR "Pinned NPad controller update changed")
 endif()
 string(REPLACE "${npad_update}"
-    "        auto& controller = controller_data[aruid_index][controller_idx];\n        if (controller.device == nullptr) {\n            continue;  // ProsperoEden: this applet resource is not activated yet\n        }\n        const auto is_connected = controller.device->IsConnected();"
+    "        auto& controller = controller_data[aruid_index][controller_idx];\n        if (controller.device == nullptr) {\n            continue;  // DirkuLator: this applet resource is not activated yet\n        }\n        const auto is_connected = controller.device->IsConnected();"
     npad_source "${npad_source}")
 # Since 67bada77 the NPad registers its controller callbacks in its constructor, before the HID
 # service hands it an applet resource: a motion sample from the pad thread in that window called
@@ -2305,7 +2308,7 @@ if(npad_entry_at LESS 0)
     message(FATAL_ERROR "Pinned NPad::ControllerUpdate changed")
 endif()
 string(REPLACE "${npad_entry}"
-    "${npad_entry}    if (applet_resource_holder.applet_resource == nullptr) {\n        return;  // ProsperoEden: the HID service has not set this NPad up yet\n    }\n"
+    "${npad_entry}    if (applet_resource_holder.applet_resource == nullptr) {\n        return;  // DirkuLator: the HID service has not set this NPad up yet\n    }\n"
     npad_source "${npad_source}")
 write_derived("${PORT_BUILD_DIR}/npad.cpp" "${npad_source}")
 get_target_property(npad_sources hid_core SOURCES)
@@ -2318,6 +2321,7 @@ add_library(eden-pad STATIC "${EDEN_PORT_DIR}/pad.cpp" "${EDEN_PORT_DIR}/pad_hap
     "${PROJECT_SOURCE_DIR}/src/input_common/drivers/virtual_gamepad.cpp")
 target_include_directories(eden-pad PUBLIC "${EDEN_PORT_DIR}" "${pad_contract}" "${audio_contract}" "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(eden-pad PUBLIC common)
+target_compile_definitions(eden-pad PRIVATE $<$<BOOL:${PS5_NATIVE}>:EDEN_PS5_INPUT_BRIDGE>)
 target_compile_options(eden-pad PRIVATE -fno-rtti $<$<BOOL:${PS5_NATIVE}>:-femulated-tls>)
 target_sources(audio_core PRIVATE "${EDEN_PORT_DIR}/audio.cpp")
 target_include_directories(audio_core PRIVATE "${EDEN_PORT_DIR}" "${pad_contract}" "${audio_contract}")

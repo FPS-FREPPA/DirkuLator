@@ -1,0 +1,69 @@
+DirkuLator 0.2 (diagnostic only): in the frame a capture records, the first draw of each program that uses depth
+compare or is named in dump-shaders.txt dumps its used constant buffers to /data/eden-nx2/logs/capture-cbuf-NN/
+(EDEN_CAPTURE_CBUF lines in depth-samplers.txt), for evaluating the shadow mask's static lookup offline per pixel.
+
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -834,6 +834,61 @@
+         }
+     }
+ #endif
++#ifdef EDEN_NX2_PS5_PROTO
++    // 0.2 (diagnostic): constant buffers of the captured frame. While a capture is armed, the first draw of
++    // each program that uses depth compare or is named in dump-shaders.txt writes its used constant buffers
++    // to /data/eden-nx2/logs/capture-cbuf-NN/ (NN = the capture folder's number) and an EDEN_CAPTURE_CBUF line.
++    {
++        static std::mutex capture_cbuf_mutex;
++        static bool capture_was_armed{};
++        static u32 capture_next{}, capture_current{};
++        static std::unordered_set<u64> capture_dumped;
++        const bool armed = VideoCommon::NativeDrawTrace::capture_reads_armed;
++        std::lock_guard lock{capture_cbuf_mutex};
++        if (armed && !capture_was_armed) {
++            capture_current = capture_next++;
++            capture_dumped.clear();
++        }
++        capture_was_armed = armed;
++        if (armed) {
++            static const std::string capture_keys = [] {
++                const char* keys = std::getenv("EDEN_NATIVE_DUMP_KEYS");
++                return std::string{keys ? keys : ""};
++            }();
++            for (size_t stage = 0; stage < stage_infos.size(); ++stage) {
++                if (!Spec::enabled_stages[stage]) continue;
++                const Shader::Info& info{stage_infos[stage]};
++                const u64 program = (u64{regs.pipelines[stage + 1].reserved[0] & 0xff} << 32) |
++                                    regs.pipelines[stage + 1].reserved[1];
++                const u64 key = VideoCommon::NativeDrawTrace::KeyAt(program);
++                const bool wanted =
++                    std::ranges::any_of(info.texture_descriptors, [](const auto& d) { return d.is_depth; }) ||
++                    (key != 0 && capture_keys.find(fmt::format("{:016x}", key)) != std::string::npos);
++                if (!wanted || capture_dumped.size() >= 64 || !capture_dumped.insert(program).second) continue;
++                const std::string folder = fmt::format("/data/eden-nx2/logs/capture-cbuf-{:02}", capture_current);
++                std::error_code error;
++                std::filesystem::create_directories(folder, error);
++                const auto& stage_cbufs = maxwell3d->state.shader_stages[stage].const_buffers;
++                for (u32 slot = 0; slot < stage_cbufs.size(); ++slot) {
++                    const auto& cbuf = stage_cbufs[slot];
++                    if (!(info.constant_buffer_mask & (1U << slot)) || !cbuf.enabled || !cbuf.size) continue;
++                    const u32 size = (std::min)(cbuf.size, 64U * 1024U);
++                    if (!gpu_memory->IsFullyMappedRange(cbuf.address, size)) continue;
++                    if (const auto device_address = gpu_memory->GpuToCpuAddress(cbuf.address))
++                        buffer_cache.DownloadMemory(*device_address, size);
++                    std::vector<u8> bytes(size);
++                    gpu_memory->ReadBlockUnsafe(cbuf.address, bytes.data(), bytes.size());
++                    const std::string path = fmt::format("{}/cbuf-{}-{:016x}-{:x}-c{}.bin", folder, stage, key, program, slot);
++                    std::ofstream(path, std::ios::binary)
++                        .write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
++                    VideoCommon::NativeDrawTrace::DepthLog(fmt::format(
++                        "EDEN_CAPTURE_CBUF capture={:02} stage={} prog={:#x} key={:016x} c{} addr={:#x} size={} file={}",
++                        capture_current, stage, program, key, slot, cbuf.address, cbuf.size, path));
++                }
++            }
++        }
++    }
++#endif
+     // EDEN_DRAW_TEXTURE_LOG=1: creating draw-textures.request logs the next 20000 draws once, with
+     // each sampled view's format, type, size, layers, address and how much of its first page is
+     // non-zero in guest memory (meaningful for textures the CPU or DMA filled).

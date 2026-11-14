@@ -1,595 +1,81 @@
-# EdGlantine-PS5
-
-**An experimental NS2 emulator for jailbroken PS5 consoles.**
-
-EdGlantine-PS5 runs the Eden NX2 engine natively on the PS5. It is built on
-[ProsperoEden](https://github.com/blackbearreloaded/ProsperoEden), the PS5 port of
-Eden, and brings in work from the Eglantine and Eden-NS2 forks.
-
-Pokopia is playable, and other NS2 games reach gameplay, but this is still a
-prototype. Expect low frame rates, rendering glitches and crashes. Nothing here
-is a stable compatibility claim.
-
-> **Contributors welcome.** Profiling, GPU memory, rendering correctness and
-> console testing are where help matters most. See [Contributing](#contributing).
-
----
-
-## Contents
-
-- [Current state](#current-state)
-- [What's new](#whats-new)
-- [Features](#features)
-- [Installing and game files](#installing-and-game-files)
-- [Known issues and limits](#known-issues-and-limits)
-- [Building](#building)
-- [Repository layout](#repository-layout)
-- [Contributing](#contributing)
-- [Credits](#credits)
-- [Further reading](#further-reading)
-
----
-
-## Current state
-
-**Current release: 00.067.000** (title `PPSA99862`, shown as **EdGlantine PS5**),
-the release of `main` with the fixes up to
-[#49](https://github.com/Portablelle/EdGlantine-PS5/pull/49).
-The `.0xx` part of `00.067.0xx` numbers test builds. Only the main version is a
-release.
-
-### Games
-
-| Game | State | Notes |
-|------|-------|-------|
-| **Pokopia** | **Playable**, 45–50 FPS | Starts correctly, and the sky is no longer black. From some camera angles, a few assets flicker and can swap places. The frame rate drops to about 30 depending on what is in view. See the [Pokopia investigation](eden/docs/POKOPIA_RENDERING_INVESTIGATION.md). |
-| **Donkey Kong Bananza** | Not playable, 5–20 FPS | No rendering problem seen any more, but the frame rate is too low to play. See the [Bananza investigation](eden/docs/BANANZA_STARTUP_INVESTIGATION.md). |
-| **Welcome Tour** | Not playable, about 10 FPS | Some assets seem to be missing and show black. |
-| **OoT** | Menu only, 20–40 FPS while it opens | The menu's background movie plays (AV1 through dav1d). The menu text is missing: only the first letter of each line shows. Its compute shaders are still partly rejected by the native shader translator. The menu reached 50–58 FPS on an earlier test build. |
-| **Mario Kart World** | Stops at the first load | Runs out of graphics memory during the first load. History in [issue #20](https://github.com/Portablelle/EdGlantine-PS5/issues/20). |
-
-These are the latest results reported by the player (November 5–6, 2026), not
-repeated benchmarks.
-Scenes and settings differ between runs. Exact numbers and conditions are in
-[TEST-REPORT.md](TEST-REPORT.md).
-
-### Where the time goes
-
-A 20-second capture on .063 recorded **8.65 s of CPU draw preparation**.
-That includes 3.73 s of descriptor work and 2.81 s of resource reads. These
-counters are nested, so they do not add up. GPU command buffers covered 5.77 s.
-CPU draw preparation is the main known bottleneck.
-
----
-
-## What's new
-
-Recent work, newest first. Each item links to its pull request.
-
-### GPU split: fewer waits between the two GPU threads
-
-The GPU split runs the GPU work on two threads: a front thread reads the
-game's command lists, and a back thread runs them. Until now, the front waited
-for the back to catch up before it read each NS2 command list, so the two
-threads barely ran at the same time. Two new layers (`99zzzt1`, `99zzzt2`) let
-the front skip most of these waits. The ideas come from Lichii pull requests
-[#179](https://github.com/zortos293/Lichii/pull/179),
-[#243](https://github.com/zortos293/Lichii/pull/243) and
-[#231](https://github.com/zortos293/Lichii/pull/231). **This has not been
-tried on a console yet.** The split is still off unless you turn it on (see
-[Known issues](#known-issues-and-limits)).
-
-- **Command lists read without waiting.** The back now records every memory
-  page the emulated GPU writes. The front reads a command list right away when
-  none of its pages was ever written by the GPU, and no new page was written in
-  the last second. In any other case it waits as before.
-- **Every early read is checked.** The back checks each early read at the point
-  where the front used to wait. If the bytes differ, it logs
-  `NX2_SPLIT_TRACK_MISS`, and the front waits for every command list for the
-  rest of the run.
-- **Semaphore polls.** A channel that waits on a semaphore resumes without
-  waiting for the back when guest memory already meets a "greater or equal"
-  wait. A poll that does not meet the wait no longer waits for a busy back
-  (at most 1 ms between polls that do).
-- **New counters** in the `NX2_SPLIT_PERF` log line show how often each path is
-  taken.
-
-### OoT menu text
-
-OoT's menu shows only the first letter of each line, such as "N" and "P".
-The text is laid out by seven compute shaders that the native translator
-rejected, so every one of their dispatches was skipped. Four layers so far:
-
-- **`UIMAD.WIDE` by an immediate** (Ampere opcode `0x8a5`, a divide by 15,
-  [#48](https://github.com/Portablelle/EdGlantine-PS5/pull/48)). After it, three of
-  the seven shaders are accepted on the console.
-- **`UIMAD` with an immediate addend** (`0x4a4`, layer `99zzzv`). Three more
-  stopped at it on 00.067.000. On 00.067.001 all six run, but the top half of
-  the menu movie is covered with colourful noise and there is still no text.
-  The six probably read data that the seventh shader prepares.
-- **High registers next to the extended uniform bank** (layer `99zzzw`). The
-  seventh shader uses uniform registers UR16 and up, which take R168-R215, and
-  also its own R206. Guest registers in that range are kept aside and copied
-  into a free low register group around each instruction, but `IADD3` with an
-  immediate had no entry for this, so the shader was rejected ("native register
-  shadowing mode"). The layer adds it and the other common integer and float
-  forms. On 00.067.002 the shader got past it and stopped at `IMAD.HI` with an
-  immediate (`0x827`) on R208.
-- **Every form of the common ALU operations** (layer `99zzzx`). Instead of a list
-  of opcodes, the operand form (bits 9-11) now tells which fields are registers,
-  for IADD3, LOP3, SHF, LEA, PRMT, IMAD, IMAD.WIDE, IMAD.HI, FFMA, FADD, FMUL,
-  SEL, FSEL, FMNMX, IMNMX, ISETP, FSETP, MOV, IABS, I2FP, F2I and LDG. With the
-  shader dumped on 00.067.003, the whole program (2934 instructions) now lowers
-  off the console. Not yet tried on a console.
-
-On 00.067.004 no shader is rejected any more: the noise is gone and the movie
-and logo show, but the menu still shows only the first letter of each line, at
-about 15 FPS. That is a different defect, not a rejected shader.
-
-The draw trace (`trace-draws.txt`, below) narrowed it down on 00.067.007 to 00.067.010:
-
-- The shader that shows each line (`db48e0136d8b96d8`) draws one quad of the whole
-  line's size (for example 1212x130) from a fixed 12-vertex mesh that the GPU does not
-  write, with UVs over its whole texture. The draw, its vertex and index buffers and its
-  per-draw constants are right; the line's texture holds only the first letter.
-- The glyphs are drawn into it by `3ef85adc7e8c8e3c`, one instance per glyph. Macro
-  `0x1e6` asks for, say, 14 instances from base instance 1, as a `draw.begin` with
-  `InstanceId::First` followed by `Subsequent` pairs. Eden draws the first pair at once,
-  then the batch in `DrawDeferred` after the macro has reset the base instance register,
-  so the batch is drawn from base instance 0. Keeping the first draw's bases for the
-  batch (tried on 00.067.010) gave the batches the requested base, but the text still
-  showed one letter, so that is not the whole cause; the change was not kept.
-- Still open: every instance of a batch seems to draw the same glyph. The next step is to
-  dump `3ef85adc7e8c8e3c` (`dump-shaders.txt`) and see how it derives the glyph from the
-  instance (instance id attribute, or the base vertex and instance at `c[0][0x640]`).
-- The 11 native compute shaders lowered at boot are not the text: they are lowered
-  about 70 seconds before the menu and run 14 fixed-size dispatches per frame from the
-  movie on.
-
-### Debugging tools
-
-- **Rejected shaders are dumped.** Each native shader the translator rejects is
-  written to `/data/eden-nx2/logs/rejected-shaders/<key>.source.bin` (and the
-  bytes mapped after it to `<key>.mapped.bin`), and the game carries on. This is
-  on by default; create `/data/eden-nx2/dump-rejected-shaders-off.txt` to turn it
-  off.
-- **Skip chosen shaders.** `/data/eden-nx2/reject-shaders.txt` lists native
-  shader keys, separated by spaces, commas or lines. Those shaders are skipped as
-  if unsupported. The log names each lowered shader's key ("Lowered native shader
-  at ...: key=..."). Skip one per run to find which shader causes a visual defect.
-- **Dump chosen shaders.** `/data/eden-nx2/dump-shaders.txt` takes keys in the same
-  format. Those shaders still run, and their source, the mapped bytes from their
-  program base (header included) and the lowered Maxwell words are written once to
-  `/data/eden-nx2/logs/rejected-shaders/`, to study a shader that lowers but draws
-  wrongly.
-- **Trace the draws of chosen shaders.** `/data/eden-nx2/trace-draws.txt` takes keys in
-  the same format. For eight frames (the first two with a traced draw, then one every 120),
-  each draw whose vertex or pixel shader has one of those keys logs an `NX2_DRAW_TRACE`
-  line: the draw kind (direct, indirect, from a macro, instance batch), counts, firsts,
-  base vertex and instance, topology, the host draw parameters, indirect arguments, the
-  macro's parameters and where they were read from, the vertex attributes, each vertex
-  stream and the index buffer with their GPU/CPU modified state and first words, and
-  constant buffer 0 of the vertex and pixel stages with the 0xc0-byte block it points to
-  at 0x170 (`EDEN_NX2_TRACE_DRAW_POINTERS` takes other offsets). The first 256 dispatches
-  of traced compute shaders log an `NX2_DISPATCH_TRACE` line (grid, block, indirect
-  arguments, constant buffers). `ps5-collect.py` writes the lines to `draw-trace.txt` and
-  a summary per frame to the report. Delete the file to turn the trace off.
-- **Collect a run in one command.**
-  `python3 eden/tools/ps5-collect.py --host <PS5 address>` downloads the logs, the
-  dumped shaders and the newest screenshot (converted to JPEG when `imagecodecs`
-  and Pillow are installed). It writes `report.json` and `report.txt`, which list
-  the version, the rejected and lowered native shaders with their keys, the last
-  performance lines and the most frequent warnings. Add `--scan <ssh host>:<patched
-  source tree>` to run every dumped shader through the translator on that host
-  (`eden/tools/native-shader-scan/scan.cpp`), which lists everything that still
-  blocks it.
-
-### Lichii mods, movie timing and loader fixes
-
-Five small changes ported from Lichii into the core (layers `99zzzf1` to
-`99zzzf5`). None of them has been tried on a console yet.
-
-- **Mods for NUP games.** RomFS mods (`romfs` folders of a game's mods) now
-  apply to NUP packages too. A NUP's update is already merged, so there is no
-  update step.
-- **OoT's movies keep up with their sound.** The game shows one movie frame per
-  game frame, so below 60 FPS its movies fell behind the audio. For OoT the
-  decoder now follows a real clock and skips frames that are more than two
-  frame times late. They are still decoded, but not converted or handed to the
-  game. A pause of over a second moves the clock instead.
-  `EDEN_NX2_MOVIE_CLOCK_SYNC=0` turns this off, and `=1` turns it on for any
-  game.
-- **RomFS by program index.** A game that opens its own RomFS by program
-  index 0 gets the loaded RomFS when the package isn't in the content
-  provider (NUP packages, loose dumps).
-- **Quotes in `.pchtxt` text.** A quote of the other kind inside a quoted
-  string no longer ends it.
-- **ZBIC errors are logged** with zstd's reason, when an NSO segment fails to
-  decompress.
-
-### Lichii buffer and texture cache fixes
-
-Three changes from open Lichii pull requests, adapted to this core. **Nothing
-has been tried on a console yet**: the test build compiles, packages and passes
-its checks, and that is all.
-
-- **Cached storage buffer bindings.** Every draw binds each storage buffer
-  again, which took a lock and walked the GPU page table each time. The answer
-  is now kept until a GPU mapping changes. This should save CPU time in draw
-  preparation, the main known cost.
-- **Native uniform banks uploaded directly.** The 64 KiB uniform banks of NS2
-  programs, refreshed once per frame, are copied straight to the GPU instead of
-  having their memory pages unprotected and protected again every frame.
-- **Clears before copies.** A render target clear that is still waiting for its
-  render pass now lands before a blit, image copy or DMA write into the same
-  image, so the clear can never wipe what the copy wrote.
-
-### Lichii shader fixes ([#44](https://github.com/Portablelle/EdGlantine-PS5/pull/44))
-
-Four shader recompiler changes ported from Lichii into the core. None has been
-tried on a console yet.
-
-- **Atomic loops on AMD.** When several shader threads update the same word
-  with an emulated atomic (float add, increment, small stores), each retry now
-  starts from the value the last exchange returned. Reloading the word could
-  keep returning a stale value on AMD, so the loop never ended and the GPU was
-  lost (OoT's first autosave, seen on a desktop AMD card).
-- **Depth-compare textures.** A depth-compare texture always gets a float
-  image, even when its descriptor looks like an integer format. RADV rejected
-  the shader otherwise (a crash in OoT's opening house).
-- **More shaders lowered.** Two more instruction forms (`SHF` with a register
-  shift and `LOP3` with a constant buffer or uniform operand) can use registers
-  that the lowering keeps for itself, instead of rejecting the shader.
-- **No silent register mix-ups.** The gradients of `TXD` and the data of the
-  global `ATOMG` and `RED` atomics are now checked like other operands. Before,
-  a register in the range the lowering keeps for itself was read from the
-  emulated uniform state instead of the guest value.
-
-### Lichii fixes, third batch ([#45](https://github.com/Portablelle/EdGlantine-PS5/pull/45))
-
-Two more changes ported from Lichii into the core, each adapted to it. None
-has been tried on a console yet. The terrain-layer clear and the cheaper
-storage buffer bindings from this batch are in
-[#47](https://github.com/Portablelle/EdGlantine-PS5/pull/47) instead.
-
-- **OoT white flashes.** Before a macro reads occlusion reports from memory, it
-  now waits for the reports whose results the host GPU has not delivered yet.
-  Before, it read the old counts, and leaves and terrain flashed white for a
-  few frames whenever the camera moved. The wait is capped at 200 ms.
-- **Fewer copies in memory tracking.** Page runs that are already sorted are
-  merged where they lie and counted without two extra copies.
-
-### Lichii fixes, second batch ([#43](https://github.com/Portablelle/EdGlantine-PS5/pull/43))
-
-Four more changes ported from Lichii into the core. None has been tried on a
-console yet.
-
-- **Fewer cache invalidations.** When the GPU writes memory, for example
-  constant buffer data on almost every draw, the texture, query and shader
-  caches are only asked to invalidate it if they ever registered something on
-  those pages. This saves CPU time in draw preparation.
-- **Cheaper draw bindings.** An index buffer that is already bound is not bound
-  again, and a large buffer that is used again is not re-marked page by page.
-- **NS2 game cards.** An XCI is checked for NS2 metadata before the guest
-  clock and memory layout are chosen, as NSP and NUP files already were.
-- **Swapchain recreation.** The device is idle before an old swapchain is
-  destroyed. A suboptimal image is still presented, and an out-of-date
-  swapchain is recreated before anything is drawn to it.
-
-### Lichii GPU and shader fixes ([#41](https://github.com/Portablelle/EdGlantine-PS5/pull/41))
-
-Seven fixes ported from Lichii into the core. None has been tried on a console
-yet.
-
-- **Black scenes on AMD.** Shaders that end some pixels early inside nested
-  branches no longer write their colours before those pixels are discarded.
-- **Movie crash.** Two threads can no longer read the list of CPU-written memory
-  at the same time.
-- **Crash after a failed pipeline.** Draws that follow a graphics pipeline that
-  failed to build are dropped instead of reaching the driver.
-- **Global `ATOM.CAS`.** Shaders that use a 32-bit compare-and-swap on a raw
-  address now compile.
-- **Depth-stencil copies.** Reinterpreting a depth-stencil image copies the
-  depth aspect only, with the right image layout.
-- **OoT sky and culling.** Multiplies by 0 and 1 are simplified, so the shader
-  sees the real buffer pointer. Native 64 KiB uniform banks are uploaded again
-  once per frame, so tables next to the code don't go stale.
-
-### Fixes from viejunerd's build for Mario Kart World and the GPU thread
-
-Taken from [viejunerd's EglantinePS5 build](https://github.com/viejunerd/Eglantine-PS5-)
-(`tools/eglantine-patches`). None of them has been tried on a console yet.
-
-- **Compact memory for Mario Kart World.** It is on for this game unless the
-  game's own settings turn it off. Written memory that is mostly zeroes is kept
-  in 16 KiB pages.
-- **Smaller kernel tables.** Each memory manager sizes its page reference counts
-  to its own region, not to all of the console's memory.
-- **Smaller GPU queue.** Command lists keep 32 entries in place instead of 512,
-  so the GPU thread's queue takes about 2 MiB instead of about 25 MiB.
-- **No more abort on a 4 GiB vertex stream.** It is clamped and logged, which
-  is what aborted Mario Kart World as it booted in viejunerd's build.
-- **Out-of-range syncpoints are dropped** and logged once, instead of crashing.
-- **Controller callbacks after the applet resource exists.** A motion sample
-  during boot could crash the app.
-- **No global Vulkan pipeline cache.** It hung NS2 games at 98% on every launch
-  after the first in viejunerd's build. Per-game caches are kept.
-- **OoT's movies play.** The game asks for its AV1 decoder with NV12 output,
-  which was refused, and the game stopped on its menu. AV1 now goes through
-  dav1d, built into FFmpeg for the PS5. It decodes several frames at once,
-  where libgav1 fell behind on the 1080p menu movie.
-  `EDEN_NX2_AV1_LIBGAV1=1` keeps libgav1.
-- **Bananza's VP9 movies on the PS5 decoder.** Its VP9 movies (up to 4K) were
-  decoded by FFmpeg on the CPU. They now go to the PS5's hardware decoder, and
-  any stream it refuses or fails on goes back to FFmpeg at the next keyframe.
-  `EDEN_NX2_VP9_HW=0` keeps FFmpeg. Not yet tried on a console.
-- **The GPU thread wakes on new work.** While channels wait on a semaphore, it
-  used to sleep a fixed 1 ms. It now wakes as soon as work arrives, and checks
-  the semaphores every 0.25 ms.
-
-### NUP packages ([#28](https://github.com/Portablelle/EdGlantine-PS5/pull/28))
-
-`.nup` files can go in `roms/` next to NSP and XCI. A NUP is Eglantine's
-single-file package: a game with its updates and DLC. The Library reads its
-name, cover, update and DLC. When the game starts, the update is applied and the
-DLC is offered to it. The reader comes from Eglantine. The DLC support comes from
-[viejunerd's EglantinePS5 build](https://github.com/viejunerd/Eglantine-PS5-).
-
-### Pokopia shaders and memory breakdown ([#27](https://github.com/Portablelle/EdGlantine-PS5/pull/27))
-
-- **Two Pokopia shaders run again.** The native translator rejected them, so
-  their dispatches were skipped. Wide local spills (`LDL`/`STL` of 64 and 128
-  bits) and one-term predicate LUTs (`UPLOP3`) are now translated.
-- **Refresh journal.** Every 5 s, the logs list the images refreshed most often.
-  In Pokopia this points to a triple-buffered texture the game rewrites from the
-  CPU, a likely cause of the sprites that swap places.
-- **Descriptor buffers can be turned off.** Create
-  `/data/eden-nx2/descriptor-buffer-off.txt` to turn them off, for A/B tests.
-- **Memory breakdown.** Every 5 s, the logs show what fills the graphics pool:
-  allocated images, staging buffers and per-heap Vulkan statistics.
-
-### Graphics memory on the PS5 ([issue #20](https://github.com/Portablelle/EdGlantine-PS5/issues/20))
-
-Mario Kart World runs out of the PS5's shared graphics memory while it loads.
-Four changes so far:
-
-- **Crash reports say so.** A guest memory exhaustion now appears in the crash
-  report and the logs ([#21](https://github.com/Portablelle/EdGlantine-PS5/pull/21)).
-- **Staging buffer pool.** Upload and download buffers are sized, reused and
-  released as they are on PS5 builds of Eglantine
-  ([#24](https://github.com/Portablelle/EdGlantine-PS5/pull/24)).
-- **ASTC one layer at a time.** Large ASTC textures are decoded layer by layer,
-  and idle staging buffers are trimmed
-  ([#25](https://github.com/Portablelle/EdGlantine-PS5/pull/25)).
-- **Earlier collection, chunked uploads.** Converted textures upload in chunks of
-  at most 32 MiB. The texture cache starts collecting earlier. A readback that the
-  pool cannot afford is skipped instead of ending the session
-  ([#26](https://github.com/Portablelle/EdGlantine-PS5/pull/26)).
-
-The game gets further with each step, but it still does not reach its title
-screen. About 3.4 GiB of graphics memory that is not images remains to be
-explained.
-
-### Hardware video decoding ([#22](https://github.com/Portablelle/EdGlantine-PS5/pull/22), [#23](https://github.com/Portablelle/EdGlantine-PS5/pull/23))
-
-- **PS5 hardware decoder.** H.264 and VP9 videos can be decoded by the PS5's own
-  decoder (`libSceVideodec2`). Any stream it cannot take goes to FFmpeg as before.
-- **Turning it off.** Set `EDEN_PS5_HW_VIDEODEC=0` to turn the hardware decoder off.
-- **Faster conversion.** Turning video frames from YUV into RGBA now runs on
-  several threads.
-- **Not yet confirmed on a console.** Whether real game videos use the hardware
-  path has not been checked.
-
-### Fixes ported from upstream ([#2](https://github.com/Portablelle/EdGlantine-PS5/pull/2)–[#19](https://github.com/Portablelle/EdGlantine-PS5/pull/19))
-
-About twenty small fixes ported one by one, each with its own pull request, for
-example:
-
-- NS2 detection inside NSP files.
-- Six-axis sensor ranges and Mii arguments.
-- Audio-out and video-decoder lifetimes at shutdown.
-- Shader-removal and descriptor-bitmap performance.
-- Mixed-case RomFS folders in dumps.
-
----
-
-## Features
-
-Everything from ProsperoEden, plus:
-
-- **NS2 games** on the Eden NX2 engine, with native shaders, GPU
-  descriptors, texture streaming and NX2 services from Eden-NS2.
-- **Six guest CPU cores** pinned to their own physical cores, with the GPU thread
-  on a separate one, when the console's topology allows it.
-- **Game formats:** NSP, XCI, NUP, and decrypted folder dumps (`exefs/` and
-  `romfs/`).
-- **Updates and DLC:** from `updates/`, from a game's own folder in `roms/`, or
-  packed inside a NUP.
-- **Vulkan through RADV** (Mihawk's PS5 Mesa), with ProsperoEden's launcher,
-  Library, settings per game, profiles and save transfer.
-- **Macro JIT** for graphics and compute (NX2 MME). It runs in PS5 direct
-  memory with separate writable and executable views.
-- **Hardware H.264/VP9 decoding**, with FFmpeg fallback.
-
----
-
-## Installing and game files
-
-The app installs as its own title, **`PPSA99862`**, separate from ProsperoEden or
-any other build. Its data, saves, settings and caches live in `/data/eden-nx2`.
-
-Put your own **keys, firmware and games** in the game files folder; see
-ProsperoEden's [install guide](eden/docs/INSTALL.md). Games go in `roms/`:
-
-```
-roms/
-├── Some Game.nsp                 # a game file
-├── Another Game.nup              # a NUP: game + update + DLC in one file
-├── Third Game/                   # a game folder, with its update and DLC beside it
-│   ├── Third Game.xci
-│   └── Third Game [Update].nsp
-└── Dumped Game/                  # a decrypted dump
-    ├── exefs/main                # with main.npdm and the other ExeFS modules
-    └── romfs/
-```
-
-- **Folder dumps** do not need container keys. NSP, XCI and NUP files still need
-  the usual setup.
-- **Launching:** the controller menu opens at startup. Choose a game in the
-  Library and press Cross.
-- **Self-update** is disabled. New builds are installed by hand, with the
-  previous files kept as a rollback.
-
----
-
-## Known issues and limits
-
-- **Low frame rates.** Only Pokopia is playable. Bananza (5–20 FPS) and Welcome
-  Tour (about 10 FPS) are too slow, and CPU draw preparation is the main known cost.
-- **Rendering.** In Pokopia, some assets flicker and swap places from certain
-  camera angles. In Welcome Tour, some assets show black.
-- **Graphics memory.** Large games can run out of the PS5's shared graphics pool
-  (issue #20).
-- **GPU thread splitting** is available but off at startup. Turning it on has
-  frozen games. To turn it on, put a `split-enable.request` file holding any
-  text in the app folder (`/data/homebrew/PPSA99862/`) during play. The app
-  reads it within a second, deletes it and logs `NX2_SPLIT_ENABLE_REQUEST`.
-  Each game session needs a new file. Without it, `NX2_SPLIT_PERF` reports
-  `words=0`. The front thread now reads most NS2 command lists without waiting
-  for the back thread (layers `99zzzt1` and `99zzzt2`), but this is
-  **untested on a console**. If the log shows `NX2_SPLIT_TRACK_MISS`, the
-  early reads turned themselves off for the rest of the run. Please report it.
-- **Sparse texture residency** is off by default (`EDEN_NX2_SPARSE_LAYERS=1` opts
-  in). It does not yet save any memory.
-- **Partly simulated services.** Some NX2 services are simulated, and graphics
-  stages the engine does not implement are unavailable.
-- **Builds are not game validation.** A passing build or host test does not
-  validate a game; only console runs do.
-- **HUD CPU columns.** The inherited HUD shows four CPU columns, while the engine
-  uses six cores.
-
----
-
-## Building
-
-All configuration and compilation, shaders and C++ tests included, runs on a
-**remote Linux build server**. Nothing is built on the Mac.
-
-**1. Point the scripts at your server.** Use a local file that Git ignores:
+# DirkuLator
+
+Native PS5 emulator development, with a focus on rendering correctness, reliable
+controller input, repeatable builds, and evidence-based debugging.
+
+## First development candidate: 0.5.54rc
+
+This repository contains the current working source and patch set. **0.5.54rc is a
+development release candidate, not a stable compatibility release.** Its PS5
+content version is `00.005.054` and its application title is **DirkuLator**
+(`PPSA99862`). The `rc` designation belongs to the release tag and archive name;
+the console requires a numeric content version.
+
+The first source snapshot is published while the clean native rebuild and
+qualification are being completed. The release notes and build receipts state
+the actual checks performed; source publication alone is not a binary test pass.
+
+## Scope
+
+- Native PS5 frontend, launcher, Vulkan/OpenGL integration, game loading, audio,
+  controller input, and the existing storage/save interfaces.
+- The complete current port patch series, including the GPU idle-fence ordering
+  correction and task/mesh/shader diagnostics.
+- An application-level input bridge: explicit arming, per-session commands,
+  applied acknowledgments, physical-controller cancellation, and automatic
+  expiry within three seconds. It is not a console-wide controller service.
+- Source-built packages with matching version metadata, source provenance,
+  artifact hashes, and retained build/validation results.
+
+This candidate does not claim to fix the observed white/cyan fog, sharp fog
+boundaries, or mesh/vertex shattering. Earlier 0.5.21 hardware runs demonstrated
+startup and gameplay; those results do not certify 0.5.54rc. No compatibility or
+performance result is implied for games that have not been tested.
+
+## Build
+
+Use Linux/WSL (the current build environment is Ubuntu 26.04):
 
 ```sh
-mkdir -p .local
-cat > .local/remote-build.env <<'CONFIG'
-EDGLANTINE_BUILD_HOST=build-server
-EDGLANTINE_REMOTE_ROOT=/tmp/edglantine-ps5-build
-CONFIG
+cd eden
+make toolchain
+make package JOBS=6
 ```
 
-`build-server` is an example SSH alias.
+`make deps` fetches the pinned inputs. Source revisions, source archive hashes,
+and the port patches are in `eden/UPSTREAM.json`, `eden/tools/deps.json`, and
+`eden/tools/eden-patches/`. Detailed instructions are in
+[BUILDING.md](eden/docs/BUILDING.md). Dependencies remain pinned; the initial
+snapshot does not silently adopt unrelated upstream changes.
 
-**2. Build.** `build-remote.sh` syncs `eden/` to the server and builds inside the
-container. The remote directory must already hold the prepared dependencies; it
-is mounted as `/work`.
+Build output is `eden/build/release/PPSA99862`. Use a published candidate's
+checksums and validation notes before installing it. Development code can fail,
+render incorrectly, or affect game progress; keep backups of your own data.
 
-```sh
-bash build-remote.sh
-```
+## Development and contributions
 
-**3. Package.** `package-remote.sh` makes the title folder, checks its isolation
-and copies the archive into `artifacts/`. Neither script contacts the console,
-and `make install` is disabled.
+`DirkuLator` and `DirkuLator-dev` keep the project and development work separate.
+The first candidate is published on the development repository. Forks and pull
+requests are welcome. Include the revision, reproduction steps, actual test
+results, and whether evidence comes from host checks or a physical PS5.
 
-```sh
-bash package-remote.sh
-```
+PR research may reference **AnyPS5**, **Lichii**, and **Eden**. A relevant PR is a
+research lead until its changes have been reviewed, integrated, and tested;
+no unreviewed PR is advertised as an incorporated fix.
 
-**How the core is prepared.**
+## License and corresponding source
 
-- **Pinned sources.** The Eden core is pinned to `67bada77`. Its other
-  dependencies are pinned in `eden/tools/deps.json`.
-- **Patch layers.** `eden/tools/eden-patches/*.diff` apply on top, in order. Any
-  change to a layer re-extracts the core and reapplies the whole series.
-- **New changes.** A core change goes into a new layer, not an edit of the
-  unpacked tree.
+DirkuLator's port code is distributed under **GPL-3.0-or-later**; see
+[LICENSE](LICENSE). Third-party components retain their respective licenses and
+copyrights; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), the original
+file headers, and the notices bundled under `eden/third_party/`.
 
----
+Existing upstream Git history and copyright notices are preserved. This
+snapshot includes local modifications to the port, branding, controller bridge,
+diagnostics, and build/packaging code. Dependency source locations and exact
+revisions are retained in the pinned manifests and build scripts. Release
+source archives and build instructions must remain available with binary
+releases. No exclusive ownership of upstream or third-party code is claimed.
 
-## Repository layout
-
-| Path | What it holds |
-|------|---------------|
-| `eden/` | The PS5 port: frontend and launcher (`headless/`), build tools (`tools/`), core patch layers (`tools/eden-patches/`), tests (`tests-nx2/`) and docs (`docs/`). |
-| `milestones/` | Notes, analyses and patches for each integration batch. |
-| `experiments/` | Investigations kept apart from the build, such as sparse textures. |
-| `prototype.json` | Exact revisions, pinned hashes and integration records. |
-| `TEST-REPORT.md` | Every build's tests, console results and measurements, newest first. |
-| `HISTORY.md` | Earlier milestone notes (00.003 to 00.040). |
-
-Packages, dumps, games, keys, SDKs and reference checkouts stay local and are
-never committed.
-
----
-
-## Contributing
-
-Code, measurements, debugging findings and console tests all help. Useful areas:
-
-- **CPU draw preparation:** descriptor setup, shader-resource lookup and SSBO
-  binding.
-- **Graphics memory:** where the memory that is not images goes (issue #20), and
-  staging and readback sizes.
-- **GPU transfers and synchronization:** fewer redundant copies and readbacks,
-  while keeping dirty-range tracking, ownership and ordering.
-- **GPU split stability:** why progress stops once splitting is on.
-- **Rendering:** small reproductions of texture and shader bugs, with tests on the
-  production code path.
-
-**Reporting a problem.** Open an issue with:
-
-- the build version, settings, game and scene;
-- the steps to reproduce it;
-- the FPS or frame times you measured;
-- logs, cleaned of personal data.
-
-For a performance change, compare the same scene and settings before and after.
-Never attach games, keys, proprietary SDKs or personal data.
-
-**Pull requests.**
-
-- Explain the problem, the change and how you checked it.
-- Keep each one focused, link the upstream commit you adapted, and keep its
-  license notices.
-- Run the tests for the code you touched.
-- Say plainly what was not tried on a real PS5: a host test passing is not a
-  console result.
-
----
-
-## Credits
-
-EdGlantine-PS5 stands on the work of these projects and their contributors:
-
-- [**ProsperoEden**](https://github.com/blackbearreloaded/ProsperoEden): the PS5 port, native app, launcher, build system and platform work this project starts from.
-- [**Eden NX2**](https://git.eden-emu.dev/Takoroka/eden-nx2): the NX2 engine behind the first prototype.
-- [**Eden-NS2**](https://github.com/0x2593/Eden-NS2): native shaders, GPU descriptors and buffers, texture streaming and NX2 services.
-- [**Eglantine (Djihads80)**](https://github.com/Djihads80/Eglantine): GPU page tracking, ASTC layer uploads, cache validation, shader fixes, sparse texture research and the NUP format.
-- [**Eglantine (zortos293)**](https://github.com/zortos293/Eglantine): partial-page batching, memory-owner tracking and texture stride fixes.
-- [**EglantinePS5 (heydemoura)**](https://github.com/heydemoura/EglantinePS5): staging buffer sizing and reuse, service-command reporting and fragmented heap commitment.
-- [**EglantinePS5 NUP build (viejunerd)**](https://github.com/viejunerd/Eglantine-PS5-): NUP DLC through the content provider.
-- [**EVO-PLAYER-PS5 (sainsaji)**](https://github.com/sainsaji/EVO-PLAYER-PS5): the `libSceVideodec2` sequence used by the hardware video decoder.
-- **Mihawk's** [PS5 Mesa](https://github.com/mihawk-99/PS5_Mesa) and [PS5 Vulkan](https://github.com/mihawk-99/PS5_Vulkan): the RADV driver the Vulkan renderer runs on.
-
-Exact revisions and how each piece was adapted are in `prototype.json` and the
-milestone notes. Original copyright notices and third-party licenses are kept in
-the source tree. These credits do not imply endorsement by any upstream project.
-
----
-
-## Further reading
-
-- [TEST-REPORT.md](TEST-REPORT.md): build-by-build tests and console results.
-- [HISTORY.md](HISTORY.md): earlier milestones, from the MME port to the EglantinePS5 adaptations.
-- [Pokopia rendering investigation](eden/docs/POKOPIA_RENDERING_INVESTIGATION.md): read it before trying another rendering experiment, so as not to repeat a negative one.
-- [Bananza startup investigation](eden/docs/BANANZA_STARTUP_INVESTIGATION.md): file-open exhaustion, guest null accesses and the JIT startup crash.
-- [Upstream performance adaptations](eden/docs/UPSTREAM_PERFORMANCE_ADAPTATIONS.md): what was taken from nxnative and Eden nightly, and why.
-- [ProsperoEden docs](eden/docs/): install, settings, saves, mods, multiplayer and themes.
+ROMs, game keys, proprietary firmware/system modules, saves, credentials,
+private console captures, and local build caches are not part of this repository.

@@ -1,4 +1,4 @@
-# ProsperoEden - A RomM with fake Switch games for tools/check-romm.py, reachable from this
+# DirkuLator - A RomM with fake Switch games for tools/check-romm.py, reachable from this
 # computer only, and the console's FTP server (ftpsrv) that writes the downloads. ROMM_VERSION picks
 # RomM's image, ROMM_PORT its port, ROMM_LIBRARY the folder of fake games; what RomM writes stays
 # in the project's volumes (docker compose down -v). FTP_PORT is ftpsrv's port and CHECK_WORK the

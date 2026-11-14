@@ -1,0 +1,238 @@
+DirkuLator 0.3 (diagnostic only, 051-review.md E.1): descriptor-table census for programs listed in
+/data/eden-nx2/table-census.txt (records, distinct handles with decoded TIC/TSC, index-list summary) and the Vulkan
+descriptor limits (EDEN_DESCRIPTOR_LIMITS), written to depth-samplers.txt. Rendering unchanged.
+
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -10,6 +10,9 @@
+ 
+ #include "shader_recompiler/frontend/ampere/program_capture.h"
+ #include <algorithm>
++#include <chrono>
++#include <map>
++#include <sstream>
+ #include <atomic>
+ #include <mutex>
+ #include <unordered_map>
+@@ -835,6 +838,195 @@
+     }
+ #endif
+ #ifdef EDEN_NX2_PS5_PROTO
++    // 0.3 (diagnostic): descriptor-table census (051-review E.1), see table-census.txt above port-0.3.py.
++    {
++        struct CensusSpec {
++            u64 key{};
++            u32 cbuf{}, offset{}, header{}, stride{}, field{}, list_cbuf{}, list_offset{};
++            bool has_list{};
++        };
++        static const std::vector<CensusSpec> census_specs = [] {
++            std::vector<CensusSpec> specs;
++            std::ifstream file("/data/eden-nx2/table-census.txt");
++            std::string line;
++            while (std::getline(file, line)) {
++                std::istringstream in(line);
++                std::string key;
++                CensusSpec s{};
++                if (!(in >> key >> std::hex >> s.cbuf >> s.offset >> s.header >> s.stride >> s.field)) continue;
++                s.key = std::strtoull(key.c_str(), nullptr, 16);
++                s.has_list = static_cast<bool>(in >> s.list_cbuf >> s.list_offset);
++                if (s.key && s.stride && !(s.stride & 3) && !(s.field & 3) && !(s.header & 3) && s.cbuf < 18)
++                    specs.push_back(s);
++            }
++            VideoCommon::NativeDrawTrace::DepthLog(fmt::format("EDEN_TABLE_CENSUS_SPECS count={}", specs.size()));
++            return specs;
++        }();
++        if (!census_specs.empty()) {
++            static std::mutex census_mutex;
++            static std::unordered_map<u64, std::pair<std::chrono::steady_clock::time_point, u32>> census_done;
++            std::lock_guard lock{census_mutex};
++            const auto now = std::chrono::steady_clock::now();
++            for (size_t stage = 0; stage < stage_infos.size(); ++stage) {
++                if (!Spec::enabled_stages[stage]) continue;
++                const u64 program = (u64{regs.pipelines[stage + 1].reserved[0] & 0xff} << 32) |
++                                    regs.pipelines[stage + 1].reserved[1];
++                const u64 key = VideoCommon::NativeDrawTrace::KeyAt(program);
++                const auto spec = std::ranges::find(census_specs, key, &CensusSpec::key);
++                if (!key || spec == census_specs.end()) continue;
++                auto& [last, runs] = census_done[key];
++                if (runs >= 6 || (runs && now - last < std::chrono::seconds{20})) continue;
++                last = now;
++                ++runs;
++                const auto& stage_cbufs = maxwell3d->state.shader_stages[stage].const_buffers;
++                const auto read_buffer = [&](u32 cbuf_index, u32 cbuf_offset, u64 cap, u64& base, u64& size) {
++                    std::vector<u8> bytes;
++                    if (cbuf_index >= stage_cbufs.size() || !stage_cbufs[cbuf_index].enabled) return bytes;
++                    const GPUVAddr slot = stage_cbufs[cbuf_index].address + cbuf_offset;
++                    base = gpu_memory->Read<u64>(slot);
++                    size = gpu_memory->Read<u64>(slot + 8);
++                    const u64 length = (std::min)(size, cap);
++                    if (!base || !length || !gpu_memory->IsFullyMappedRange(base, length)) return bytes;
++                    for (const auto& [range_address, range_size] : gpu_memory->GetSubmappedRange(base, length))
++                        if (const auto device_address = gpu_memory->GpuToCpuAddress(range_address))
++                            buffer_cache.DownloadMemory(*device_address, range_size);
++                    bytes.resize(length);
++                    gpu_memory->ReadBlockUnsafe(base, bytes.data(), bytes.size());
++                    return bytes;
++                };
++                const auto word = [](const std::vector<u8>& bytes, u64 at) {
++                    u32 value{};
++                    if (at + 4 <= bytes.size()) std::memcpy(&value, bytes.data() + at, 4);
++                    return value;
++                };
++                const auto hex = [](const std::vector<u8>& bytes, u64 at, u64 count) {
++                    std::string text;
++                    for (u64 i = at; i < at + count && i + 4 <= bytes.size(); i += 4) {
++                        u32 value{};
++                        std::memcpy(&value, bytes.data() + i, 4);
++                        text += fmt::format("{}{:08x}", text.empty() ? "" : " ", value);
++                    }
++                    return text;
++                };
++                u64 base{}, size{};
++                const auto table = read_buffer(spec->cbuf, spec->offset, 16ULL << 20, base, size);
++                const u64 first = u64{spec->header} + spec->field;
++                const u64 records = table.size() >= first + 4 ? (table.size() - first - 4) / spec->stride + 1 : 0;
++                std::map<u32, std::pair<u32, u64>> handles; // handle -> (records, first record)
++                u64 filled{};
++                std::vector<u64> filled_records;
++                for (u64 r = 0; r < records; ++r) {
++                    const u32 handle = word(table, first + r * spec->stride);
++                    if (!handle) continue;
++                    ++filled;
++                    if (filled_records.size() < 2) filled_records.push_back(r);
++                    auto [it, inserted] = handles.try_emplace(handle, 0U, r);
++                    ++it->second.first;
++                }
++                VideoCommon::NativeDrawTrace::DepthLog(fmt::format(
++                    "EDEN_TABLE_CENSUS run={} stage={} prog={:#x} key={:016x} table=c{}[{:#x}] base={:#x} size={:#x} "
++                    "read={:#x} header={:#x} stride={:#x} field={:#x} records={} filled={} distinct={} header_words=[{}]",
++                    runs, stage, program, key, spec->cbuf, spec->offset, base, size, table.size(), spec->header,
++                    spec->stride, spec->field, records, filled, handles.size(), hex(table, 0, spec->header)));
++                for (const u64 r : filled_records)
++                    VideoCommon::NativeDrawTrace::DepthLog(fmt::format(
++                        "EDEN_TABLE_RECORD key={:016x} record={} words=[{}]", key, r,
++                        hex(table, spec->header + r * spec->stride, spec->stride)));
++                std::vector<std::pair<u32, std::pair<u32, u64>>> sorted(handles.begin(), handles.end());
++                std::ranges::sort(sorted, [](const auto& a, const auto& b) { return a.second.first > b.second.first; });
++                if (sorted.size() > 32) sorted.resize(32);
++                for (const auto& [handle, info] : sorted) {
++                    const auto pair = TexturePair(handle, via_header_index);
++                    Tegra::Texture::TICEntry tic{};
++                    Tegra::Texture::TSCEntry tsc{};
++                    const GPUVAddr tic_addr = regs.tex_header.Address() + u64{pair.first} * sizeof(tic);
++                    const GPUVAddr tsc_addr = regs.tex_sampler.Address() + u64{pair.second} * sizeof(tsc);
++                    const bool tic_ok = pair.first <= regs.tex_header.limit && gpu_memory->IsFullyMappedRange(tic_addr, sizeof(tic));
++                    const bool tsc_ok = pair.second <= regs.tex_sampler.limit && gpu_memory->IsFullyMappedRange(tsc_addr, sizeof(tsc));
++                    if (tic_ok) gpu_memory->ReadBlockUnsafe(tic_addr, &tic, sizeof(tic));
++                    if (tsc_ok) gpu_memory->ReadBlockUnsafe(tsc_addr, &tsc, sizeof(tsc));
++                    VideoCommon::NativeDrawTrace::DepthLog(fmt::format(
++                        "EDEN_TABLE_HANDLE key={:016x} handle={:#010x} records={} first_record={} tic={}{} tsc={}{} "
++                        "tic_fmt={:#x} tic_rtype={} tic_type={} tic_size={}x{} tic_addr={:#x} cmp={} func={} wrap={},{},{}",
++                        key, handle, info.first, info.second, pair.first, tic_ok ? "" : "(out)", pair.second,
++                        tsc_ok ? "" : "(out)", static_cast<u32>(tic.format.Value()), static_cast<u32>(tic.r_type.Value()),
++                        static_cast<u32>(tic.texture_type.Value()), tic.Width(), tic.Height(), tic.Address(),
++                        tsc.depth_compare_enabled.Value(), static_cast<u32>(tsc.depth_compare_func.Value()),
++                        static_cast<u32>(tsc.wrap_u.Value()), static_cast<u32>(tsc.wrap_v.Value()),
++                        static_cast<u32>(tsc.wrap_p.Value())));
++                }
++                if (spec->has_list) {
++                    u64 list_base{}, list_size{};
++                    const auto list = read_buffer(spec->list_cbuf, spec->list_offset, 4ULL << 20, list_base, list_size);
++                    u64 nonzero{};
++                    u32 maximum{};
++                    std::unordered_set<u32> distinct;
++                    for (u64 i = 0; i + 4 <= list.size(); i += 4) {
++                        const u32 value = word(list, i);
++                        if (!value) continue;
++                        ++nonzero;
++                        maximum = (std::max)(maximum, value & 0xffffU);
++                        if (distinct.size() < 4096) distinct.insert(value & 0xffffU);
++                    }
++                    VideoCommon::NativeDrawTrace::DepthLog(fmt::format(
++                        "EDEN_TABLE_LIST key={:016x} list=c{}[{:#x}] base={:#x} size={:#x} read={:#x} nonzero_words={} "
++                        "distinct_low16={} max_low16={}", key, spec->list_cbuf, spec->list_offset, list_base, list_size,
++                        list.size(), nonzero, distinct.size(), maximum));
++                }
++            }
++        }
++    }
++    // 0.3 (diagnostic): draws into a watched depth target (capture-watch.txt, e.g. the static shadow maps).
++    // Once per (target, vertex key, pixel key): the pixel stage's texture elements, how many use the
++    // handle-zero program (handle not computable, sampled as handle 0) and how many have a null view.
++    // For foliage missing from the static map: an alpha-tested shadow draw with an empty texture
++    // discards every pixel.
++    if (regs.zeta_enable && VideoCommon::NativeDrawTrace::IsWatched(regs.zeta.Address())) {
++        static std::mutex target_mutex;
++        static std::unordered_map<u64, u32> target_draws; // triple hash -> draws seen
++        static u32 target_lines{};
++        const auto program_of = [&](size_t stage) {
++            return (u64{regs.pipelines[stage + 1].reserved[0] & 0xff} << 32) | regs.pipelines[stage + 1].reserved[1];
++        };
++        const u64 vs_key = VideoCommon::NativeDrawTrace::KeyAt(program_of(0));
++        const u64 ps_key = Spec::enabled_stages[4] ? VideoCommon::NativeDrawTrace::KeyAt(program_of(4)) : 0;
++        const u64 triple = (regs.zeta.Address() * 0x9e3779b97f4a7c15ULL) ^ (vs_key * 0x100000001b3ULL) ^ ps_key;
++        std::lock_guard lock{target_mutex};
++        const u32 seen = ++target_draws[triple];
++        if ((seen == 1 || seen == 100 || seen == 1000) && target_lines < 1024) {
++            ++target_lines;
++            u32 elements{}, handle_zero{}, null_views{};
++            if (Spec::enabled_stages[4]) {
++                size_t view_pos{};
++                for (size_t stage = 0; stage < 4; ++stage) {
++                    if (!Spec::enabled_stages[stage]) continue;
++                    const auto& si = stage_infos[stage];
++                    view_pos += Shader::NumDescriptors(si.texture_buffer_descriptors) +
++                                Shader::NumDescriptors(si.image_buffer_descriptors) +
++                                Shader::NumDescriptors(si.texture_descriptors) + Shader::NumDescriptors(si.image_descriptors);
++                }
++                const auto& ps = stage_infos[4];
++                view_pos += Shader::NumDescriptors(ps.texture_buffer_descriptors) + Shader::NumDescriptors(ps.image_buffer_descriptors);
++                for (const auto& desc : ps.texture_descriptors) {
++                    const bool zero_program = desc.handle_program < ps.handle_programs.size() &&
++                        ps.handle_programs[desc.handle_program].size() == 2 &&
++                        ps.handle_programs[desc.handle_program][0] == static_cast<u32>(Shader::HandleOp::Immediate) &&
++                        ps.handle_programs[desc.handle_program][1] == 0;
++                    for (u32 index = 0; index < desc.count; ++index, ++view_pos) {
++                        ++elements;
++                        if (zero_program) ++handle_zero;
++                        if (view_pos < views.size() && (!views[view_pos].id || views[view_pos].id == VideoCommon::NULL_IMAGE_VIEW_ID))
++                            ++null_views;
++                    }
++                }
++            }
++            VideoCommon::NativeDrawTrace::DepthLog(fmt::format(
++                "EDEN_WATCHED_TARGET_DRAW zeta={:#x} vs={:016x} ps={:016x} draws={} ps_textures={} handle_zero={} null_views={} "
++                "alpha_test={} depth_write={}",
++                regs.zeta.Address(), vs_key, ps_key, seen, elements, handle_zero, null_views,
++                regs.alpha_test_enabled, regs.depth_write_enabled));
++        }
++    }
+     // 0.2 (diagnostic): constant buffers of the captured frame. While a capture is armed, the first draw of
+     // each program that uses depth compare or is named in dump-shaders.txt writes its used constant buffers
+     // to /data/eden-nx2/logs/capture-cbuf-NN/ (NN = the capture folder's number) and an EDEN_CAPTURE_CBUF line.
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -50,6 +50,7 @@
+ #include "video_core/vulkan_common/vulkan_device.h"
+ #include "video_core/vulkan_common/vulkan_wrapper.h"
+ #include "video_core/gpu_logging/gpu_logging.h"
++#include "video_core/native_draw_trace.h"
+ 
+ #ifdef __ANDROID__
+ #include "../../android/app/src/main/jni/android_settings.h"
+@@ -533,6 +534,13 @@
+         .support_buffer_texture_handles = profile.support_sampled_image_array_nonuniform_indexing,
+     };
+     host_info.ApplyDescriptorLimitPolicy();
++    // 0.3 (diagnostic, 051-review E.1): the descriptor limits the translator works with.
++    VideoCommon::NativeDrawTrace::DepthLog(fmt::format(
++        "EDEN_DESCRIPTOR_LIMITS per_stage_sampled_images={} per_stage_resources={} set_samplers={} "
++        "set_sampled_images={} buffer_texture_handles={}",
++        host_info.max_per_stage_descriptor_sampled_images, host_info.max_per_stage_resources,
++        host_info.max_descriptor_set_samplers, host_info.max_descriptor_set_sampled_images,
++        host_info.support_buffer_texture_handles));
+ 
+     if (device.GetMaxVertexInputAttributes() < Maxwell::NumVertexAttributes) {
+         LOG_WARNING(Render_Vulkan, "maxVertexInputAttributes is too low: {} < {}",

@@ -1,0 +1,97 @@
+Build 033 (from the 032 run: no freeze, crash "game memory exhausted" at 816 s after the autosave):
+- The stall watchdog acts only when the GPU owes work (a channel pending, or syncpoint 1's guest
+  value ahead of the host's); idle waits are counted (idle_waits) and not logged or recovered. In
+  032 all 11 reports were an idle GPU while the guest loaded or saved.
+- Memory probe: a fall of 192 MiB or more in the pool's largest free block against the reading of
+  up to 1 s before (64 MiB under 768 MiB) logs EDEN_MEMORY_DROP and runs the texture cache's memory
+  report at once (images, largest, formats, VMA types, dedicated images, staging pools), at most
+  twice a second. EDEN_NX2_MEMORY_DROP_OFF / memory-drop-off.txt: off. Diagnostic only.
+- Not changed: the caches' "memory in use" (graphics_usage.h already measures the shared pool; the
+  6144 MiB seen in 032 was that formula at a nearly full pool, not a wrong figure).
+
+diff --git a/src/video_core/gpu_thread.cpp b/src/video_core/gpu_thread.cpp
+--- a/src/video_core/gpu_thread.cpp
++++ b/src/video_core/gpu_thread.cpp
+@@ -105,17 +105,24 @@
+             auto* const rasterizer_ptr = renderer.ReadRasterizer();
+             on_back([rasterizer_ptr] { rasterizer_ptr->SubmitRecordedWork(); });
+         };
++        unsigned long long idle_waits = 0;
+         const auto handle_stall = [&] {
+-            ++stalls;
+             const auto& syncpoints = system.GPU().Host1x().GetSyncpointManager();
+             const long long waited_ms = steady_ms() - progress_ms.load(std::memory_order_relaxed);
+             const bool pending = scheduler.HasPendingNativeChannels();
++            // 033: nothing owed (the guest is busy elsewhere): not a GPU stall.
++            if (!pending && syncpoints.GetGuestSyncpointValue(1) == syncpoints.GetHostSyncpointValue(1)) {
++                ++idle_waits;
++                progress_ms.store(steady_ms(), std::memory_order_relaxed);
++                return;
++            }
++            ++stalls;
+             const bool report = stalls <= 32 || stalls % 64 == 0;
+             if (report) {
+                 std::fprintf(stderr,
+                              "EDEN_GPU_STALL n=%llu waited_ms=%lld channels_pending=%d idle_submits=%llu "
+-                             "sp1_guest=%u sp1_host=%u recovery=%d\n",
+-                             stalls, waited_ms, pending ? 1 : 0, idle_submits,
++                             "idle_waits=%llu sp1_guest=%u sp1_host=%u recovery=%d\n",
++                             stalls, waited_ms, pending ? 1 : 0, idle_submits, idle_waits,
+                              syncpoints.GetGuestSyncpointValue(1), syncpoints.GetHostSyncpointValue(1),
+                              stall_recovery ? 1 : 0);
+                 LOG_WARNING(HW_GPU, "EDEN_GPU_STALL n={} waited_ms={} channels_pending={} sp1_guest={} sp1_host={}",
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -378,6 +378,41 @@
+     if (runtime.CanReportMemoryUsage()) {
+         total_used_memory = runtime.GetDeviceMemoryUsage();
+     }
++    // 033 (layer 99zzzzp): a fall of 192 MiB or more in the pool's largest free block against
++    // the reading of up to a second ago (64 MiB once under 768 MiB) logs EDEN_MEMORY_DROP and
++    // runs the memory report below now, at most twice a second. EDEN_NX2_MEMORY_DROP_OFF: never.
++    static bool memory_report_now = false;
++#if defined(EDEN_NX2_PS5_PROTO)
++    if (const auto pool_free = ::Eden::Performance::graphics_memory_free.load(std::memory_order_relaxed)) {
++        static const bool drop_probe = std::getenv("EDEN_NX2_MEMORY_DROP_OFF") == nullptr;
++        static u64 baseline = 0;
++        static auto baseline_at = std::chrono::steady_clock::now();
++        static auto last_drop_report = std::chrono::steady_clock::time_point{};
++        const u64 largest = pool_free();
++        const auto now = std::chrono::steady_clock::now();
++        if (drop_probe && largest != 0 && baseline > largest) {
++            const u64 drop = baseline - largest;
++            if ((drop >= 192_MiB || (largest < 768_MiB && drop >= 64_MiB)) &&
++                now - last_drop_report >= std::chrono::milliseconds{500}) {
++                last_drop_report = now;
++                memory_report_now = true;
++                const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - baseline_at).count();
++                LOG_WARNING(HW_GPU, "EDEN_MEMORY_DROP largest_free {} -> {} MiB in {} ms, graphics used {} MiB, frame {}",
++                            baseline >> 20, largest >> 20, ms, total_used_memory >> 20, frame_tick);
++                std::fprintf(stderr, "EDEN_MEMORY_DROP largest_free_mib=%llu->%llu ms=%lld frame=%llu\n",
++                             static_cast<unsigned long long>(baseline >> 20),
++                             static_cast<unsigned long long>(largest >> 20), ms,
++                             static_cast<unsigned long long>(frame_tick));
++                baseline = largest;
++                baseline_at = now;
++            }
++        }
++        if (largest != 0 && (baseline == 0 || largest > baseline || now - baseline_at >= std::chrono::seconds{1})) {
++            baseline = largest;
++            baseline_at = now;
++        }
++    }
++#endif
+     // Every 600 frames, and every 5 s: device memory in use against the collector's thresholds,
+     // and what the images themselves account for (VRAM pressure makes the collector thrash). A
+     // load runs at ~20 fps, so 600 frames alone never came before a crash at ~100 s (issue #20).
+@@ -385,7 +420,8 @@
+     static u64 refresh_report_frame{};
+     static auto last_report = std::chrono::steady_clock::now();
+     const auto report_now = std::chrono::steady_clock::now();
+-    if (++frames % 600 == 0 || report_now - last_report >= std::chrono::seconds{5}) {
++    if (++frames % 600 == 0 || report_now - last_report >= std::chrono::seconds{5} ||
++        std::exchange(memory_report_now, false)) {
+         last_report = report_now;
+         u64 image_bytes{};
+         u64 host_bytes{}, unswizzle_bytes{};

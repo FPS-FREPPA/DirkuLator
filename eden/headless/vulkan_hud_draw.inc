@@ -32,3 +32,30 @@
             cmdbuf.PushConstants(hud_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, constants);
             cmdbuf.Draw(4, 1, 0, 0);
         }
+        // DirkuLator 0.5.20: the graphs, each in its own box with the same pipeline (hud.h,
+        // MakeHudGraphs; vulkan_hud.frag draws them). A graph that does not fit is left out.
+        for (const Eden::HudSnapshot& graph : hud_graphs) {
+            const uint32_t graph_h = static_cast<uint32_t>(
+                std::lround(Eden::kHudGraphHeight * Eden::HudSizeScale(graph.loading & Eden::kHudSizeMask)));
+            if (!hud_graphics_pipeline || graph.width == 0 ||
+                render_area.width < hud_units(graph.x + graph.width) ||
+                render_area.height < hud_units(graph.y + graph_h))
+                continue;
+            const VkRect2D graph_scissor{
+                {static_cast<int32_t>(hud_units(graph.x)), static_cast<int32_t>(hud_units(graph.y))},
+                {hud_units(graph.width), hud_units(graph_h)}};
+            const VkViewport graph_viewport{static_cast<float>(graph_scissor.offset.x),
+                static_cast<float>(graph_scissor.offset.y), static_cast<float>(graph_scissor.extent.width),
+                static_cast<float>(graph_scissor.extent.height), 0, 1};
+            cmdbuf.SetViewport(0, graph_viewport);
+            cmdbuf.SetScissor(0, graph_scissor);
+            cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, hud_graphics_pipeline);
+            cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, hud_pipeline_layout, 0,
+                                      hud_descriptor_set, {});
+            auto graph_constants = graph;
+            graph_constants.x = hud_units(graph.x);
+            graph_constants.y = hud_units(graph.y);
+            graph_constants.width = render_area.height;
+            cmdbuf.PushConstants(hud_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, graph_constants);
+            cmdbuf.Draw(4, 1, 0, 0);
+        }

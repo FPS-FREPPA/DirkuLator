@@ -1,0 +1,43 @@
+DirkuLator 0.5.9: whole-image readbacks under memory pressure. The garbage collector keeps GPU-modified images of
+64 MiB or more instead of reading them back to evict them; DownloadMemory skips a readback graphics memory refuses
+(EDEN_READBACK_SKIPPED), as the async readbacks already do. 0.5.8 ended on a forced 288 MiB readback at Saria's wave.
+
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -250,6 +250,12 @@
+             return false;
+         }
+         if (must_download) {
++            // 0.5.9: a GPU-modified image this large stays: its readback needs a block as large as
++            // what evicting it frees, while graphics memory is short (OoT's 12288x12288 static
++            // shadow map: 288 MiB, refused at Saria's wave in 0.5.8).
++            if (image.unswizzled_size_bytes >= (u64{64} << 20)) {
++                return false;
++            }
+             auto map = runtime.DownloadStagingBuffer(image.unswizzled_size_bytes);
+             const auto copies = FixSmallVectorADL(FullDownloadCopies(image.info));
+             image.DownloadMemory(map, copies);
+@@ -1451,7 +1457,21 @@
+     });
+     for (const ImageId image_id : images) {
+         Image& image = slot_images[image_id];
+-        auto map = runtime.DownloadStagingBuffer(image.unswizzled_size_bytes);
++        // 0.5.9: a readback graphics memory refuses is skipped, as the async ones are; the image
++        // stays GPU-modified and the session goes on.
++        std::optional<decltype(runtime.DownloadStagingBuffer(image.unswizzled_size_bytes))> try_map;
++        if constexpr (requires(Runtime& r) { r.TryDownloadStagingBuffer(size_t{}, false); }) {
++            try_map = runtime.TryDownloadStagingBuffer(image.unswizzled_size_bytes, false);
++        } else {
++            try_map = runtime.DownloadStagingBuffer(image.unswizzled_size_bytes);
++        }
++        if (!try_map) {
++            image.flags |= ImageFlagBits::GpuModified;
++            LOG_WARNING(HW_GPU, "EDEN_READBACK_SKIPPED image={:#x} bytes={} (graphics memory refused)",
++                        image.gpu_addr, image.unswizzled_size_bytes);
++            continue;
++        }
++        auto& map = *try_map;
+         const auto copies = FixSmallVectorADL(FullDownloadCopies(image.info));
+         image.DownloadMemory(map, copies);
+         runtime.Finish();

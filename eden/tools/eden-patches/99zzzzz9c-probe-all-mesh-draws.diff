@@ -1,0 +1,161 @@
+DirkuLator 0.5.2 (probe part; rendering unchanged): EDEN_TASK_PROBE rotates task-draw probes over shadow, view (8+ tasks)
+and other targets (kind=other), and probes mesh draws without a task program (kind=plain) from their own output buffer.
+The memory change of 0.5.2 (headless/staging_buffers.h: exact staging sizes in 1 MiB steps) is not in this layer.
+
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -235,7 +235,7 @@
+     scheduler.RequestOutsideRenderPassOperationContext();
+     scheduler.Record([arena = task_probe.arena, args_source = task_probe.args_source,
+                       args_offset = task_probe.args_offset, args_copy = task_probe.args_copy,
+-                      output_copy = task_probe.output_copy,
++                      output_copy = task_probe.output_copy, arena_offset = task_probe.arena_offset,
+                       bytes = task_probe.output_bytes, payload_source = task_probe.payload_source,
+                       payload_offset = task_probe.payload_offset, payload_copy = task_probe.payload_copy,
+                       payload_bytes = task_probe.payload_bytes](vk::CommandBuffer cmdbuf) {
+@@ -247,9 +247,11 @@
+         };
+         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                                written);
+-        cmdbuf.CopyBuffer(args_source, args_copy.buffer,
+-                          VkBufferCopy{args_offset, args_copy.offset, args_bytes});
+-        cmdbuf.CopyBuffer(arena, output_copy.buffer, VkBufferCopy{0, output_copy.offset, bytes});
++        if (args_source != VK_NULL_HANDLE) {
++            cmdbuf.CopyBuffer(args_source, args_copy.buffer,
++                              VkBufferCopy{args_offset, args_copy.offset, args_bytes});
++        }
++        cmdbuf.CopyBuffer(arena, output_copy.buffer, VkBufferCopy{arena_offset, output_copy.offset, bytes});
+         if (payload_source != VK_NULL_HANDLE && payload_bytes != 0) {
+             cmdbuf.CopyBuffer(payload_source, payload_copy.buffer,
+                               VkBufferCopy{payload_offset, payload_copy.offset, payload_bytes});
+@@ -280,9 +282,13 @@
+         return value;
+     };
+     constexpr u64 args_bytes{Shader::Backend::SPIRV::MESH_EMULATION_ARGS_WORDS * 4};
+-    const u32 dispatched{span_word(probe.args_copy, args_bytes, 0)};
+-    const u32 requested{span_word(probe.args_copy, args_bytes, Shader::Backend::SPIRV::MESH_EMULATION_ARGS_REQUESTED)};
+-    const u32 base{span_word(probe.args_copy, args_bytes, Shader::Backend::SPIRV::MESH_EMULATION_ARGS_BASE)};
++    const bool plain{probe.host_groups != 0};
++    const u32 dispatched{plain ? probe.host_groups : span_word(probe.args_copy, args_bytes, 0)};
++    const u32 requested{plain ? probe.host_groups
++                              : span_word(probe.args_copy, args_bytes,
++                                          Shader::Backend::SPIRV::MESH_EMULATION_ARGS_REQUESTED)};
++    const u32 base{plain ? 0U
++                         : span_word(probe.args_copy, args_bytes, Shader::Backend::SPIRV::MESH_EMULATION_ARGS_BASE)};
+     const u64 words_available{probe.output_bytes / 4};
+     const u32 groups{static_cast<u32>((std::min<u64>)(
+         dispatched, base < words_available ? (words_available - base) / probe.block_words : 0))};
+@@ -394,7 +400,7 @@
+         "triangles={} unused_slots={} bad_index={} nan={} behind={} offscreen_xy={} outside_depth={} kept={} "
+         "ndc x[{:.3g},{:.3g}] y[{:.3g},{:.3g}] z[{:.3g},{:.3g}] target: {} sample:{} "
+         "bad: groups={} max={:#x} lt128={} lt256={} ge256={} first={} raw:{}\n",
+-        ++task_probe.number, probe.shadow ? "shadow" : "view", probe.tasks, dispatched, requested, base,
++        ++task_probe.number, probe.kind, probe.tasks, dispatched, requested, base,
+         groups, triangles, degenerate, bad_index, nan, behind, outside_xy, outside_z, kept, min_x, max_x,
+         min_y, max_y, min_z, max_z, probe.target, sample, bad_groups, max_index, bad_below_128,
+         bad_below_256, bad_above, first_bad.empty() ? std::string{"-"} : first_bad, raw)};
+@@ -885,7 +891,7 @@
+             // arena's first 4 MiB and the read decodes from the draw's base (from its args); a
+             // draw past that range decodes no groups.
+             static u64 next_probe_frame{};
+-            static bool want_shadow{true};
++            static u32 rotation{}; // 0.5.2: shadow, view (8+ tasks), other targets
+             const auto& probe_regs{maxwell3d->regs};
+             const u64 probe_frame{VideoCommon::NativeDrawTrace::frame.load(std::memory_order_relaxed)};
+             const bool shadow_target{probe_regs.zeta_enable && probe_regs.zeta_size.width >= 1000 &&
+@@ -893,14 +899,21 @@
+             const bool view_target{probe_regs.rt[0].width == 1440 ||
+                                    (probe_regs.zeta_enable && probe_regs.zeta_size.width == 1440)};
+             const MeshEmulationSetup* const probe_setup{pipeline->MeshEmulation()};
++            const bool other_target{!shadow_target && !view_target};
++            const bool late{probe_frame >= next_probe_frame + 120};
++            const u32 want{rotation % 3};
+             if (!task_probe.copy_pending && !task_probe.read_pending &&
+                 probe_frame >= next_probe_frame && probe_setup && probe_setup->block_words != 0 &&
+-                (want_shadow ? shadow_target
+-                             : view_target && (groups >= 8 || probe_frame >= next_probe_frame + 120))) {
++                (late || (want == 0   ? shadow_target
++                          : want == 1 ? view_target && groups >= 8
++                                      : other_target))) {
+                 next_probe_frame = probe_frame + 30;
+-                want_shadow = !want_shadow;
++                ++rotation;
+                 const auto& vp{probe_regs.viewport_transform[0]};
+                 task_probe.arena = *arena.buffer;
++                task_probe.arena_offset = 0;
++                task_probe.host_groups = 0;
++                task_probe.kind = shadow_target ? "shadow" : view_target ? "view" : "other";
+                 task_probe.args_source = args.buffer;
+                 task_probe.args_offset = args.offset;
+                 task_probe.payload_source = payload.buffer;
+@@ -945,6 +958,54 @@
+             }
+             mesh_emulation_indirect = {args.buffer, args.offset};
+         }
++        // 0.5.2: EDEN_TASK_PROBE kind=plain, a mesh draw without a task program: its output is the
++        // draw's own buffer (mesh_draw_buffers' first) and its group count is known here.
++        if (!has_task && groups != 0 && !mesh_draw_buffers.empty()) {
++            static u64 next_plain_frame{};
++            const u64 plain_frame{VideoCommon::NativeDrawTrace::frame.load(std::memory_order_relaxed)};
++            const MeshEmulationSetup* const plain_setup{pipeline->MeshEmulation()};
++            if (!task_probe.copy_pending && !task_probe.read_pending && plain_frame >= next_plain_frame &&
++                plain_setup && plain_setup->block_words != 0) {
++                next_plain_frame = plain_frame + 30;
++                const auto& plain_regs{maxwell3d->regs};
++                const StagingBufferRef& out{mesh_draw_buffers.front()};
++                task_probe.arena = out.buffer;
++                task_probe.arena_offset = out.offset;
++                task_probe.args_source = VK_NULL_HANDLE;
++                task_probe.args_offset = 0;
++                task_probe.payload_source = VK_NULL_HANDLE;
++                task_probe.payload_offset = 0;
++                task_probe.payload_bytes = 0;
++                task_probe.payload_stride = 0;
++                task_probe.output_bytes = (std::min)(bytes, u64{4} << 20);
++                task_probe.tasks = 0;
++                task_probe.host_groups = groups;
++                task_probe.block_words = plain_setup->block_words;
++                task_probe.vertex_lines = plain_setup->vertex_lines;
++                task_probe.max_vertices = plain_setup->max_vertices;
++                task_probe.max_primitives = plain_setup->max_primitives;
++                task_probe.position_lines = plain_setup->position_lines;
++                task_probe.shadow = false;
++                task_probe.kind = "plain";
++                task_probe.target = fmt::format(
++                    "zeta={:#x} {}x{} on={} rt0={:#x} {}x{} block_words={} max_vertices={} max_primitives={} "
++                    "programs:",
++                    plain_regs.zeta.Address(), plain_regs.zeta_size.width, plain_regs.zeta_size.height,
++                    plain_regs.zeta_enable ? 1 : 0, plain_regs.rt[0].Address(), plain_regs.rt[0].width,
++                    plain_regs.rt[0].height, plain_setup->block_words, plain_setup->max_vertices,
++                    plain_setup->max_primitives);
++                for (size_t stage = 0; stage < Maxwell::MaxShaderProgram; ++stage) {
++                    if (!plain_regs.IsShaderConfigEnabled(stage)) {
++                        continue;
++                    }
++                    const auto& config{plain_regs.pipelines[stage]};
++                    task_probe.target += fmt::format(
++                        " {}={:#x}", stage,
++                        (static_cast<u64>(config.reserved[0] & 0xff) << 32) | config.reserved[1]);
++                }
++                task_probe.copy_pending = true;
++            }
++        }
+         mesh_emulation_groups = groups;
+         mesh_emulation_vertices_per_group = pipeline->MeshEmulationVerticesPerGroup();
+         static std::atomic<u64> emulated_draws{};
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -295,6 +295,11 @@
+         u32 max_primitives{};
+         std::array<u32, 4> position_lines{};
+         std::string target;
++        // 0.5.2: where the output starts in `arena`, the host's group count for a draw without a
++        // task program (0 with one: the count comes from its args), and the kind printed.
++        u64 arena_offset{};
++        u32 host_groups{};
++        const char* kind{"view"};
+         // 0.5: the task payload buffer (per task workgroup: payload_stride words, count at word 1).
+         VkBuffer payload_source{};
+         u64 payload_offset{};

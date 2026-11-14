@@ -53,7 +53,7 @@ def check():
     assert all(not (APP / p).is_symlink() and (APP / p).stat().st_size for p in REQUIRED)
     param = json.loads((APP / 'sce_sys/param.json').read_text())
     assert param['titleId'] == 'PPSA99862' and param['contentId'].endswith('EDENNX2PROTO0001')
-    assert param['localizedParameters']['en-US']['titleName'] == 'EdGlantine PS5'
+    assert param['localizedParameters']['en-US']['titleName'] == 'DirkuLator'
     assert param['pubtools']['loudnessSnd0'] == '-28.00'
     lapy = json.loads((APP / 'lapy-manifest.json').read_text())
     assert lapy['schema'] == 'lapy-owned-build/1'
@@ -70,9 +70,10 @@ def check():
     imports = (OUT / 'imports.txt').read_text()
     needed = sorted(imports.split('NeededLibraries [', 1)[1].split(']', 1)[0].split())
     # libSceCommonDialog, libSceImeDialog and libSceSysmodule: the PS5 keyboard for a game's text
-    # entry (headless/system_keyboard.cpp); RADV loads system modules as well.
+    # entry (headless/system_keyboard.cpp); RADV loads system modules as well. libSceVideodec2: the
+    # hardware video decoder (tools/build-videodec2-stub.sh).
     expected = ['libSceAudioOut.sprx', 'libSceCommonDialog.sprx', 'libSceImeDialog.sprx', 'libSceLibcInternal.sprx', 'libSceNet.sprx',
-                'libScePad.sprx', 'libSceSysmodule.sprx', 'libSceUserService.sprx', 'libkernel.sprx']
+                'libScePad.sprx', 'libSceSysmodule.sprx', 'libSceUserService.sprx', 'libSceVideodec2.sprx', 'libkernel.sprx']
     if json.loads((OUT / 'frontend.json').read_text())['renderer'] == 'opengl-4.6-compatibility':
         assert b'[ps5-batch-summary] config gpu-present=1 multidraw=1 deferred=1 ' in (OUT / 'llvm-pie.elf').read_bytes(), 'SDK batching disabled or missing compiled receipt'
         expected += ['libSceAgc.prx', 'libSceAgcDriver.prx', 'libSceSystemService.sprx',

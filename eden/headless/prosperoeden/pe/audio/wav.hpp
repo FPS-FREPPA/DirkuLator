@@ -1,4 +1,4 @@
-// ProsperoEden - WAV (RIFF PCM) decoding for sound effects.
+// DirkuLator - WAV (RIFF PCM) decoding for sound effects.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

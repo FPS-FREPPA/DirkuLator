@@ -1,0 +1,115 @@
+Build 035 (from the 034 run: std::bad_alloc on the GPU thread at 272 s, a 144 MiB request for the
+RGBA8 scratch of one 6144x6144 ASTC slice kept as BC3, pool largest free block 9 MiB):
+- ConvertImage decodes and compresses an ASTC slice in bands of rows once its RGBA8 scratch would
+  pass 16 MiB; bands start on multiples of the ASTC block height and of 4, so the output is the same.
+- EDEN_FLUSH_SITE (stdout every 5 s): the callers of Scheduler::Flush with the most flushes, for the
+  70-90 submissions per frame seen in gameplay (031-034) with the GPU busy ~27%. Diagnostic only;
+  EDEN_NX2_FLUSH_SITES_OFF disables it.
+
+diff --git a/src/video_core/renderer_vulkan/vk_scheduler.cpp b/src/video_core/renderer_vulkan/vk_scheduler.cpp
+--- a/src/video_core/renderer_vulkan/vk_scheduler.cpp
++++ b/src/video_core/renderer_vulkan/vk_scheduler.cpp
+@@ -6,6 +6,12 @@
+ // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <algorithm>
++#include <array>
++#include <chrono>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
+ #include <memory>
+ #include <mutex>
+ #include <thread>
+@@ -60,6 +66,46 @@
+     if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
+         VideoCommon::GpuSplit::CheckOwner("Scheduler::Flush");
+     }
++    {
++        // 035: flushes counted by caller, reported every 5 s (EDEN_FLUSH_SITE).
++        static const bool flush_sites = std::getenv("EDEN_NX2_FLUSH_SITES_OFF") == nullptr;
++        if (flush_sites) {
++            static std::array<std::pair<std::uintptr_t, u64>, 32> sites{};
++            static u64 other{};
++            static auto window = std::chrono::steady_clock::now();
++            const auto caller = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0));
++            bool counted = false;
++            for (auto& [site, count] : sites) {
++                if (site == caller || site == 0) {
++                    site = caller;
++                    ++count;
++                    counted = true;
++                    break;
++                }
++            }
++            other += counted ? 0 : 1;
++            const auto now = std::chrono::steady_clock::now();
++            if (now - window >= std::chrono::seconds{5}) {
++                window = now;
++                std::sort(sites.begin(), sites.end(),
++                          [](const auto& a, const auto& b) { return a.second > b.second; });
++                const auto anchor = reinterpret_cast<std::uintptr_t>(&VideoCommon::NativeWaitProfile::Anchor);
++                for (size_t i = 0; i < 6 && sites[i].second != 0; ++i) {
++                    std::printf("EDEN_FLUSH_SITE caller=%#llx anchor=%#llx count=%llu\n",
++                                static_cast<unsigned long long>(sites[i].first),
++                                static_cast<unsigned long long>(anchor),
++                                static_cast<unsigned long long>(sites[i].second));
++                }
++                if (other != 0) {
++                    std::printf("EDEN_FLUSH_SITE caller=other count=%llu\n",
++                                static_cast<unsigned long long>(other));
++                }
++                std::fflush(stdout);
++                sites = {};
++                other = 0;
++            }
++        }
++    }
+     // When flushing, we only send data to the worker thread; no waiting is necessary.
+     const u64 signal_value = SubmitExecution(signal_semaphore, wait_semaphore);
+     AllocateNewContext();
+diff --git a/src/video_core/texture_cache/util.cpp b/src/video_core/texture_cache/util.cpp
+--- a/src/video_core/texture_cache/util.cpp
++++ b/src/video_core/texture_cache/util.cpp
+@@ -1201,15 +1201,34 @@
+             const size_t input_slice = size_t{Common::DivideUp(copy.image_extent.width, tile_size.width)} *
+                                        Common::DivideUp(copy.image_extent.height, tile_size.height) * 16;
+             const size_t output_slice = aligned_plane_dim / bpp_div;
+-            decode_scratch.resize_destructive(plane_dim * BytesPerBlock(PixelFormat::A8B8G8R8_UNORM));
++            // And a large slice in bands of rows (035): a 6144x6144 slice asked for 144 MiB in one
++            // piece during an area load while the pool's largest free block was 9 MiB. A band
++            // starts on a multiple of the ASTC block height and of 4 (whole blocks for both
++            // functions), so the output is the same; the scratch stays near 16 MiB.
++            const u32 width = copy.image_extent.width;
++            const u32 height = copy.image_extent.height;
++            constexpr size_t band_scratch_bytes = size_t{16} << 20;
++            const u32 band_unit = 4 * tile_size.height;
++            const size_t row_bytes = size_t{width} * BytesPerBlock(PixelFormat::A8B8G8R8_UNORM);
++            const u32 band_rows =
++                row_bytes * height <= band_scratch_bytes
++                    ? height
++                    : (std::max)(band_unit,
++                                 static_cast<u32>(band_scratch_bytes / row_bytes) / band_unit * band_unit);
++            const size_t input_band_row = size_t{Common::DivideUp(width, tile_size.width)} * 16;
++            const size_t output_band_row = size_t{Common::DivideUp(width, 4U)} * (bc1 ? 8 : 16);
++            decode_scratch.resize_destructive(row_bytes * (std::min)(band_rows, height));
+ 
+             for (u32 slice = 0; slice < slices; ++slice) {
+-                Tegra::Texture::ASTC::Decompress(
+-                    input_offset.subspan(slice * input_slice), copy.image_extent.width,
+-                    copy.image_extent.height, 1, tile_size.width, tile_size.height, decode_scratch);
++                for (u32 y = 0; y < height; y += band_rows) {
++                    const u32 rows = (std::min)(band_rows, height - y);
++                    Tegra::Texture::ASTC::Decompress(
++                        input_offset.subspan(slice * input_slice + (y / tile_size.height) * input_band_row),
++                        width, rows, 1, tile_size.width, tile_size.height, decode_scratch);
+ 
+-                compress(decode_scratch, copy.image_extent.width, copy.image_extent.height, 1,
+-                         output.subspan(output_offset + slice * output_slice));
++                    compress(decode_scratch, width, rows, 1,
++                             output.subspan(output_offset + slice * output_slice + (y / 4) * output_band_row));
++                }
+             }
+ 
+             copy.buffer_size =

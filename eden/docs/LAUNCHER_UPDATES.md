@@ -1,6 +1,6 @@
 # Launcher pack updates
 
-ProsperoEden can check, download and replace an installed runtime launcher independently of the application. This is an optional host feature. Existing packs without update metadata continue to load normally, and do not cause network requests.
+DirkuLator can check, download and replace an installed runtime launcher independently of the application. This is an optional host feature. Existing packs without update metadata continue to load normally, and do not cause network requests.
 
 ## Using the updater
 

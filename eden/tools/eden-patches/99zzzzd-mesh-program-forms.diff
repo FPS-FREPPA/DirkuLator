@@ -1,0 +1,255 @@
+What kept most of OoT's mesh programs from lowering, found by running the translator over every program
+in the game's archives (mesh: 36% to 91%, all: 98.5% to 99.8%): ULOP3 with a UPn output, UPOPC of any
+uniform register, ULDC, UP2UR, UISETP, the uniform vote, SEL with a uniform source, and register
+shadowing for the forms that were missing it. Bumps the translator salt.
+
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -351,8 +351,7 @@
+             if (reg == 63) return 255;
+             return ~0U;
+         };
+-        if (opcode == 0x292 && (insn.Bits(12, 4) != 7 || insn.Bits(40, 24) || insn.Bits(80, 1) ||
+-                                insn.Bits(81, 3) != 7 || insn.Bits(87, 4) != 15 || !insn.Bits(91, 1)))
++        if (opcode == 0x292 && (insn.Bits(40, 24) || insn.Bits(80, 1) || insn.Bits(87, 4) != 15 || !insn.Bits(91, 1)))
+             return fail(index, "native uniform logic mode");
+         // UIMAD.WIDE(.U32) with an immediate (0x8a5) becomes IMAD.WIDE immediate (0x825) on the mapped
+         // registers, as UIMAD immediate (0x8a4) becomes 0x824. OoT's menu text compute shaders divide by
+@@ -373,14 +372,14 @@
+             }
+             opcode = opcode == 0x291 ? 0x211 : opcode == 0x2a4 ? 0x224 : opcode == 0x2a5 ? 0x225 : opcode == 0x4a4 ? 0x424 : opcode == 0x8a4 ? 0x824 : opcode == 0x8a5 ? 0x825 : opcode == 0x891 ? 0x811 : opcode == 0x892 ? 0x812 : opcode == 0x890 ? 0x810 : opcode == 0x292 ? 0x212 : 0x210;
+         }
+-        const bool uniform_predicate_bank = original_opcode == 0x290 || original_opcode == 0x890 || original_opcode == 0x892;
++        const bool uniform_predicate_bank = original_opcode == 0x290 || original_opcode == 0x890 || original_opcode == 0x892 || original_opcode == 0x292;
+         if (uniform_predicate_bank) {
+             const auto map = [](u32 code) { return ((code & 7) == 7 ? 7U : 6U - (code & 7)) | (code & 8); };
+             const u32 execution = map(insn.Bits(12, 4));
+             insn.words[0] = (insn.words[0] & ~0xf000U) | (execution << 12);
+             const u32 first = map(insn.Bits(81, 3));
+             const u32 carry_a = map(insn.Bits(87, 4));
+-            if (original_opcode == 0x892) {
++            if (original_opcode == 0x892 || original_opcode == 0x292) {
+                 insn.words[2] = (insn.words[2] & ~((7U << 17) | (15U << 23))) |
+                     (first << 17) | (carry_a << 23);
+             } else {
+@@ -561,6 +560,10 @@
+                  (u64{251} << 20) | (u64{1} << 41) | (u64{7} << 48));
+         };
+         const u32 guard_slot = 6 - (native_predicate & 7);
++        const auto bank = [&]() -> u32 {
++            const u32 value = insn.Bits(54, 5);
++            return value == 24 ? 17U : value;
++        };
+         const u32 high_uniform_base = reserved_register;
+         const auto bindless_general_tex = [&]() -> bool {
+             constexpr std::array<u32, 8> coordinate_count{1, 2, 3, 3, 2, 3, 0, 4};
+@@ -1200,13 +1203,14 @@
+         }
+         case 0x886: { // VOTEU ballot and independent uniform predicate output.
+             const u32 output = insn.Bits(81, 3), target = insn.Bits(16, 8);
+-            if (target > 63 || insn.words[1] ||
+-                (output > 1 && output != 7) || insn.Bits(72, 2) > 2 || native_predicate != 7)
++            const u32 mapped_target = uniform_register(target);
++            if (mapped_target == ~0U || insn.Bits(24, 8) || insn.words[1] ||
++                (insn.words[2] & ~0x078e0300U) || insn.Bits(72, 2) > 2 || native_predicate != 7)
+                 return fail(index, "native uniform vote mode");
+             const u32 temporary = output == 7 ? 7 : 6 - output;
+             const u32 mask = 1U << temporary;
+             if (output != 7) emit(0x38e8000000070000ULL | 253 | (u64{255} << 8) | (u64{mask} << 20));
+-            emit(0x50d8000000070000ULL | uniform_register(target) |
++            emit(0x50d8000000070000ULL | mapped_target |
+                 (u64{insn.Bits(87, 4)} << 39) | (u64{temporary} << 45) | (u64{insn.Bits(72, 2)} << 48));
+             if (output != 7) {
+                 emit(0x38e8000000070000ULL | 239 | (u64{239} << 8) | (u64{mask} << 20));
+@@ -1415,18 +1419,25 @@
+         case 0xab9: case 0xabb: { // ULDC U32/U64, direct or indexed.
+             const u32 uniform_dest = insn.Bits(16, 8), index_reg = insn.Bits(24, 8);
+             const u32 width = insn.Bits(73, 3);
+-            if (uniform_dest >= 63 || (width != 4 && width != 5) ||
+-                (width == 5 && ((uniform_dest & 1) || uniform_dest >= 62)) ||
+-                insn.Bits(38, 16) % 4 || insn.Bits(62, 2) ||
++            const bool subword_load = width == 0 || width == 2;
++            const u32 offset = insn.Bits(38, 16);
++            const u32 alignment = width == 0 ? 1U : width == 2 ? 2U : 4U;
++            const u32 target = uniform_register(uniform_dest);
++            const u32 index_target = opcode == 0xabb ? uniform_register(index_reg) : 255U;
++            if (target == ~0U || target == 255 || (!subword_load && width != 4 && width != 5) ||
++                (opcode == 0xab9 && subword_load && offset >= 0x8000) ||
++                (width == 5 && ((uniform_dest & 1) || uniform_register(uniform_dest + 1) != target + 1)) ||
++                // An index register can align the offset; the host reads the aligned word either way.
++                bank() >= 18 || (opcode == 0xab9 && offset % alignment) || insn.Bits(62, 2) ||
+                 (insn.words[2] & ~0xe00U) != (opcode == 0xab9 ? 0U : 0x08000000U) ||
+-                (opcode == 0xabb && index_reg >= 63))
++                index_target == ~0U)
+                 return fail(index, "native uniform constant load mode");
+             if (opcode == 0xab9 && width == 4) {
+-                emit(0x4c98000000000000ULL | predicate | (uniform_register(uniform_dest)) | (u64{15} << 39) | cbuf());
++                emit(0x4c98000000000000ULL | predicate | target | (u64{15} << 39) | cbuf());
+             } else {
+-                emit(0xef90000000000000ULL | predicate | (uniform_register(uniform_dest)) |
+-                     (u64{opcode == 0xab9 ? 255U : uniform_register(index_reg)} << 8) | (u64{insn.Bits(38, 16)} << 20) |
+-                     (u64{insn.Bits(54, 5)} << 36) | (u64{width} << 48));
++                emit(0xef90000000000000ULL | predicate | target |
++                     (u64{index_target} << 8) | (u64{offset} << 20) |
++                     (u64{bank()} << 36) | (u64{width} << 48));
+             }
+             break;
+         }
+@@ -1577,11 +1588,15 @@
+                 return fail(index, "native uniform leading bit mode");
+             emit(0x5c30000000000000ULL | predicate | (uniform_register(static_cast<u32>(dest))) | (u64{uniform_register(insn.words[1])} << 20) | (u64{insn.Bits(74, 1)} << 41));
+             break;
+-        case 0x2bf: // UPOPC, as POPC of the uniform's register.
+-            if (dest >= 16 || insn.words[1] >= 16 || insn.words[2] != 0x08000000 || native_predicate != 7)
++        case 0x2bf: { // UPOPC, as POPC of the uniform's register.
++            const u32 popc_target = uniform_register(static_cast<u32>(dest));
++            const u32 popc_source = uniform_register(insn.words[1] & 0xff);
++            if (popc_target == ~0U || popc_source == ~0U || dest >= 63 || insn.words[1] >= 64 ||
++                insn.words[2] != 0x08000000 || native_predicate != 7)
+                 return fail(index, "native uniform population count mode");
+-            emit(0x5c08000000000000ULL | predicate | (dest + 216) | (u64{insn.words[1] + 216} << 20));
++            emit(0x5c08000000000000ULL | predicate | popc_target | (u64{popc_source} << 20));
+             break;
++        }
+         case 0x3a1: { // MATCH.ALL.U32/U64 with only the all-equal predicate retained.
+             const u32 source = insn.Bits(24, 8), target = insn.Bits(81, 3);
+             const bool wide = insn.Bits(73, 1);
+@@ -1964,22 +1979,30 @@
+             break;
+         }
+         case 0x28c: case 0x88c: { // UISETP with independent uniform predicate accumulation.
+-            const u32 output = insn.Bits(81, 3), condition = insn.Bits(87, 3);
+-            const u32 combine = insn.Bits(74, 2);
++            const u32 output = insn.Bits(81, 3);
+             const u32 a = uniform_register(insn.Bits(24, 8)), b = opcode == 0x88c ? 252U : uniform_register(insn.Bits(32, 8));
+-            if (output == 7 || insn.Bits(84, 3) != 7 || insn.Bits(72, 1) || combine > 2 ||
+-                native_predicate != 7 || a == ~0U || b == ~0U)
++            const u32 combine = insn.Bits(87, 3), combine_op = insn.Bits(74, 2);
++            if (output > 6 || insn.Bits(84, 3) != 7 || insn.Bits(72, 1) || combine_op == 3 ||
++                a == ~0U || b == ~0U)
+                 return fail(index, "native uniform comparison mode");
+-            const u32 temporary = 6 - output, mask = 1U << temporary;
+-            if (opcode == 0x88c) mov_imm(252, insn.words[1]);
+-            emit(0x38e8000000070000ULL | 253 | (u64{255} << 8) | (u64{0x7f} << 20));
+-            emit(0x38f0000000070000ULL | (u64{239} << 8) | (u64{0x7f} << 20));
+-            emit(0x5b60000000070000ULL | 7 | (u64{temporary} << 3) |
+-                (u64{a} << 8) | (u64{b} << 20) | (u64{condition == 7 ? 7 : 6 - condition} << 39) |
+-                (u64{insn.Bits(90, 1)} << 42) | (u64{combine} << 45) |
+-                (u64{insn.Bits(73, 1)} << 48) | (u64{insn.Bits(76, 3)} << 49));
+-            emit(0x38e8000000070000ULL | 239 | (u64{239} << 8) | (u64{mask} << 20));
+-            emit(0x38f0000000070000ULL | (u64{253} << 8) | (u64{0x7f} << 20));
++            const u32 temporary = 6 - output, combine_slot = combine == 7 ? 7U : 6 - combine;
++            const u32 combine_mask = combine == 7 ? 0U : 1U << combine_slot;
++            const bool guarded = native_predicate != 7;
++            const u32 temporary_mask = 1U << temporary;
++            const u32 load_mask = combine_mask | (guarded ? temporary_mask | 1U << guard_slot : 0U);
++            const u32 mask = temporary_mask | load_mask;
++            if (opcode == 0x88c)
++                emit(0x0100000000000000ULL | (u64{7} << 16) | 252 | (u64{15} << 12) |
++                     (u64{insn.words[1]} << 20));
++            emit(0x38e8000000070000ULL | 253 | (u64{255} << 8) | (u64{mask} << 20));
++            if (load_mask) emit(0x38f0000000070000ULL | (u64{239} << 8) | (u64{load_mask} << 20));
++            emit(0x5b60000000000000ULL |
++                (u64{guarded ? (native_predicate & 8) | guard_slot : 7U} << 16) | 7 | (u64{temporary} << 3) |
++                (u64{a} << 8) | (u64{b} << 20) | (u64{combine_slot} << 39) |
++                (u64{insn.Bits(90, 1)} << 42) | (u64{combine_op} << 45) | (u64{insn.Bits(73, 1)} << 48) |
++                (u64{insn.Bits(76, 3)} << 49));
++            emit(0x38e8000000070000ULL | 239 | (u64{239} << 8) | (u64{temporary_mask} << 20));
++            emit(0x38f0000000070000ULL | (u64{253} << 8) | (u64{mask} << 20));
+             break;
+         }
+         case 0x287: case 0x887: { // USEL; preserve ordinary predicates.
+@@ -3283,11 +3306,18 @@
+             break;
+         }
+         case 0x883: { // UP2UR with UP0 selected and a zero merge source.
+-            if (dest >= 63 || insn.Bits(24, 8) != 63 ||
+-                native_predicate != 7 || insn.words[1] != 1 || insn.words[2] != 0x08000000)
+-                return fail(index, "native uniform predicate-to-register mode");
+-            emit(0x3828000000070000ULL | uniform_register(static_cast<u32>(dest)) | (u64{239} << 8) | (u64{6} << 20));
+-            emit(0x0400000000070000ULL | uniform_register(static_cast<u32>(dest)) | (uniform_register(static_cast<u32>(dest)) << 8) | (u64{1} << 20));
++            const u32 target = uniform_register(insn.Bits(16, 8)), mask = insn.words[1];
++            if (target == ~0U || insn.Bits(24, 8) != 63 || native_predicate != 7 ||
++                insn.words[2] != 0x08000000 || mask > 0x7f)
++                return fail(index, "native uniform predicate move mode");
++            if (target == 255) break;
++            mov_imm(target, 0);
++            for (u32 k = 0; k < 7; ++k) {
++                if (!((mask >> k) & 1)) continue;
++                emit(0x3800000000070000ULL | 250 | (u64{239} << 8) | (u64{(6 - k) | (1U << 8)} << 20));
++                emit(0x36f0000000070000ULL | target | (u64{250} << 8) | (u64{k | (1U << 8)} << 20) |
++                     (u64{target} << 39));
++            }
+             break;
+         }
+         case 0x803: { // P2R PR, register merge source, immediate mask
+@@ -3469,7 +3499,7 @@
+                  (u64{insn.Bits(74, 1)} << 13) | (u64{src} << 20) | (u64{rounding} << 39));
+             break;
+         }
+-        case 0x207: case 0x807: case 0xa07:
++        case 0xc07: case 0x207: case 0x807: case 0xa07:
+         case 0x208: case 0x808: case 0xa08: { // Bitwise SEL / FSEL
+             // FSEL carries abs/neg on both selected operands (bits 73/72 and 62/63, as for FADD).
+             // Off by default until it is proven not to change FastFusion colours: EDEN_NATIVE_LOWER_ENABLE=audit_fsel.
+diff --git a/src/shader_recompiler/frontend/ampere/native.h b/src/shader_recompiler/frontend/ampere/native.h
+--- a/src/shader_recompiler/frontend/ampere/native.h
++++ b/src/shader_recompiler/frontend/ampere/native.h
+@@ -43,7 +43,7 @@
+ 
+ // Salt mixed into the pipeline cache identity of native-translated programs. Bump it whenever the
+ // native translation changes so cached results of an older translator are never reused.
+-inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a0000fULL;
++inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a00010ULL;
+ 
+ // Maxwell Location offset of native instruction `index` (same mapping the lowering uses).
+ [[nodiscard]] constexpr u32 LocationOf(u32 index) {
+diff --git a/src/shader_recompiler/frontend/ampere/register_pressure.h b/src/shader_recompiler/frontend/ampere/register_pressure.h
+--- a/src/shader_recompiler/frontend/ampere/register_pressure.h
++++ b/src/shader_recompiler/frontend/ampere/register_pressure.h
+@@ -26,6 +26,12 @@
+     const u32 opcode = input.Bits(0, 12);
+     switch (opcode) {
+     case 0x802: case 0xb08: case 0xd08: operand(16); break;
++    case 0x81a: operand(16); operand(24); break;
++    case 0x927: operand(24); operand(32); break;
++    case 0x923: operand(16); operand(24); break;
++    case 0x805: operand(16); operand(24); break;
++    case 0x306: operand(16); operand(32); break;
++    case 0x243: operand(16); operand(32); break;
+     case 0x321: operand(16, input.Bits(74, 2) + 1); operand(24); operand(32); break; // ALD
+     case 0x322: operand(24); operand(32, input.Bits(74, 2) + 1); break;              // AST
+     // Common integer and float ALU forms, so a program that uses the extended uniform bank (UR16 and
+diff --git a/src/shader_recompiler/ir_opt/texture_pass.cpp b/src/shader_recompiler/ir_opt/texture_pass.cpp
+--- a/src/shader_recompiler/ir_opt/texture_pass.cpp
++++ b/src/shader_recompiler/ir_opt/texture_pass.cpp
+@@ -5,6 +5,9 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <algorithm>
++#include <atomic>
++#include <cstdio>
++#include <string>
+ #include <queue>
+ #include <unordered_map>
+ #include <unordered_set>
+@@ -979,9 +982,15 @@
+                 addr.handle_program = static_cast<u32>(it - programs.begin());
+                 return TextureInst{addr, &inst, block};
+             }
+-            const auto* root = inst.Arg(0).TryInstRecursive();
+-            throw NotImplementedException("Unresolved buffer-backed texture expression {} after {} references ({} recovered origins)",
+-                root ? IR::NameOf(root->GetOpcode()) : "immediate", buffer_references, buffer_tracker.ResolvedCount());
++            // Not computable for a whole draw: fall through to the search below, which at least
++            // gives the shader a texture, instead of losing the pipeline and all its draws.
++            static std::atomic<u32> handle_fallbacks{};
++            if (const u32 count = ++handle_fallbacks; count <= 32) {
++                const auto* root = inst.Arg(0).TryInstRecursive();
++                std::fprintf(stderr, "EDEN_TEXTURE_HANDLE_FALLBACK root=%s stopped_at=%s budget=%d count=%u\n",
++                             root ? std::string(IR::NameOf(root->GetOpcode())).c_str() : "immediate",
++                             std::string(IR::NameOf(g_handle_failure)).c_str(), budget, count);
++            }
+         }
+         std::optional<ConstBufferAddr> track_addr;
+         try {

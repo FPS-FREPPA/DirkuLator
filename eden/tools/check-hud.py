@@ -178,6 +178,19 @@ int main() {
            == "OGL 60FPS 17.0MS CPU 55% GPU 43% MEM 4.1/8.0G P42");
     assert(std::string_view(Eden::FormatHudText(clock, 100, "OGL", known, -1).data())
            == "OGL 60FPS 17.0MS CPU 55% GPU 43% MEM 4.1/8.0G");
+    // DirkuLator 0.5.18: the performance monitor's pieces, only while it says so, and each only
+    // once measured; after them the ping, as before.
+    Eden::Hud::perf_shown = true;
+    assert(std::string_view(Eden::FormatHudText(clock, 100, "VLK", known).data())
+           == "VLK 60FPS 17.0MS CPU 55% GPU 43% MEM 4.1/8.0G");
+    Eden::Hud::perf_p99_tenths = 412;
+    Eden::Hud::perf_draws = 1234;
+    Eden::Hud::perf_pipelines = 3;
+    assert(std::string_view(Eden::FormatHudText(clock, 100, "VLK", known, 42).data())
+           == "VLK 60FPS 17.0MS CPU 55% GPU 43% MEM 4.1/8.0G P99 41.2MS DRW 1234 SHD 3 P42");
+    Eden::Hud::perf_shown = false;
+    assert(std::string_view(Eden::FormatHudText(clock, 100, "VLK", known).data())
+           == "VLK 60FPS 17.0MS CPU 55% GPU 43% MEM 4.1/8.0G");
 
     // With frame generation the display is given frames the guest never made: both rates are
     // shown then, and the display's is never above its own refresh rate.

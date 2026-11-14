@@ -54,8 +54,8 @@ int main() {
     static_assert(IdleAllowance(static_cast<std::size_t>(-1)) == 256 * MiB);  // unknown: the cap
     static_assert(IdleAllowance(4096 * MiB) == 256 * MiB);
     static_assert(IdleAllowance(512 * MiB) == 256 * MiB);
-    static_assert(IdleAllowance(512 * MiB - 1) == 0);                        // low: keep none
-    static_assert(IdleAllowance(84 * MiB) == 0);
+    static_assert(IdleAllowance(512 * MiB - 1) == 64 * MiB);                 // low: 64 MiB (0.5.16)
+    static_assert(IdleAllowance(84 * MiB) == 64 * MiB);
 
     // The console's burst: 105 idle buffers, 610 MiB, beside busy and deferred ones.
     Cache device{}, upload{}, download{};
@@ -88,11 +88,11 @@ int main() {
         assert(level.delete_index < level.entries.size() || level.delete_index == 0);
         assert(level.iterate_index <= level.entries.size());
     }
-    // Low memory: every idle buffer goes, busy and deferred stay.
+    // Low memory: at most 64 MiB of idle buffers stay (0.5.16), largest first; busy and deferred stay.
     const Released low = TrimIdle(caches, idle, IdleAllowance(125 * MiB));
-    assert(IdleBytes(caches) == 0 && low.bytes > 0);
+    assert(IdleBytes(caches) <= 64 * MiB && low.bytes > 0);
     assert(Has(caches, busy) && Has(caches, deferred));
-    std::printf("PASS: idle staging trim: 608 MiB idle -> %llu MiB (cap 256, largest first), then 0 when the largest free block < 512 MiB; busy/deferred kept\n",
+    std::printf("PASS: idle staging trim: 608 MiB idle -> %llu MiB (cap 256, largest first), then <= 64 MiB when the largest free block < 512 MiB; busy/deferred kept\n",
                 static_cast<unsigned long long>((608 * MiB - capped.bytes) / MiB));
 }
 '''

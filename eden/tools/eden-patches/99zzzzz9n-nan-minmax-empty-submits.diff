@@ -1,0 +1,84 @@
+DirkuLator 0.5.17: FP min/max as OpNMin/OpNMax and saturate/clamp as NMin(NMax) (the guest's FMNMX returns the
+operand that is not NaN, .SAT maps NaN to 0; OpFMin/OpFMax/OpFClamp are undefined for NaN);
+EDEN_WATCHED_TARGET_DRAW logs geometry_clip;
+translator salt 0x...17.
+
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp
+@@ -21,12 +21,10 @@
+     return op;
+ }
+ 
++// 0.5.17: the guest's saturate and clamp give a bound for NaN (.SAT: NaN -> 0); OpFClamp and
++// OpFMin/OpFMax are undefined for NaN, so NMin/NMax (the operand that is not NaN) do it on every driver.
+ Id Clamp(EmitContext& ctx, Id type, Id value, Id zero, Id one) {
+-    if (ctx.profile.has_broken_spirv_clamp) {
+-        return ctx.OpFMin(type, ctx.OpFMax(type, value, zero), one);
+-    } else {
+-        return ctx.OpFClamp(type, value, zero, one);
+-    }
++    return ctx.OpNMin(type, ctx.OpNMax(type, value, zero), one);
+ }
+ 
+ Id FPOrdNotEqual(EmitContext& ctx, Id lhs, Id rhs) {
+@@ -88,20 +86,22 @@
+     return Decorate(ctx, inst, ctx.OpFma(ctx.F64[1], a, b, c));
+ }
+ 
++// 0.5.17: FMNMX returns the operand that is not NaN (NaN only when both are): OpNMin/OpNMax.
++// OpFMin/OpFMax are undefined for NaN and RADV could return it.
+ Id EmitFPMax32(EmitContext& ctx, Id a, Id b) {
+-    return ctx.OpFMax(ctx.F32[1], a, b);
++    return ctx.OpNMax(ctx.F32[1], a, b);
+ }
+ 
+ Id EmitFPMax64(EmitContext& ctx, Id a, Id b) {
+-    return ctx.OpFMax(ctx.F64[1], a, b);
++    return ctx.OpNMax(ctx.F64[1], a, b);
+ }
+ 
+ Id EmitFPMin32(EmitContext& ctx, Id a, Id b) {
+-    return ctx.OpFMin(ctx.F32[1], a, b);
++    return ctx.OpNMin(ctx.F32[1], a, b);
+ }
+ 
+ Id EmitFPMin64(EmitContext& ctx, Id a, Id b) {
+-    return ctx.OpFMin(ctx.F64[1], a, b);
++    return ctx.OpNMin(ctx.F64[1], a, b);
+ }
+ 
+ Id EmitFPMul16(EmitContext& ctx, IR::Inst* inst, Id a, Id b) {
+diff --git a/src/shader_recompiler/frontend/ampere/native.h b/src/shader_recompiler/frontend/ampere/native.h
+--- a/src/shader_recompiler/frontend/ampere/native.h
++++ b/src/shader_recompiler/frontend/ampere/native.h
+@@ -43,7 +43,7 @@
+ 
+ // Salt mixed into the pipeline cache identity of native-translated programs. Bump it whenever the
+ // native translation changes so cached results of an older translator are never reused.
+-inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a00016ULL;
++inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a00017ULL;
+ 
+ // Maxwell Location offset of native instruction `index` (same mapping the lowering uses).
+ [[nodiscard]] constexpr u32 LocationOf(u32 index) {
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -1032,14 +1032,15 @@
+             VideoCommon::NativeDrawTrace::DepthLog(fmt::format(
+                 "EDEN_WATCHED_TARGET_DRAW zeta={:#x} vs={:016x} ps={:016x} draws={} ps_textures={} handle_zero={} null_views={} "
+                 "alpha_test={} depth_write={} depth_test={} func={} blend0={} topology={} rt0={:#x} "
+-                "vs_ssbos={} vs_textures={} vs_texture_buffers={}",
++                "vs_ssbos={} vs_textures={} vs_texture_buffers={} geometry_clip={}",
+                 regs.zeta.Address(), vs_key, ps_key, seen, elements, handle_zero, null_views,
+                 regs.alpha_test_enabled, regs.depth_write_enabled, regs.depth_test_enable,
+                 static_cast<u32>(regs.depth_test_func), regs.blend.enable[0],
+                 static_cast<u32>(key.state.topology.Value()), regs.rt[0].Address(),
+                 Spec::enabled_stages[0] ? stage_infos[0].storage_buffers_descriptors.size() : 0,
+                 Spec::enabled_stages[0] ? Shader::NumDescriptors(stage_infos[0].texture_descriptors) : 0,
+-                Spec::enabled_stages[0] ? Shader::NumDescriptors(stage_infos[0].texture_buffer_descriptors) : 0));
++                Spec::enabled_stages[0] ? Shader::NumDescriptors(stage_infos[0].texture_buffer_descriptors) : 0,
++                static_cast<u32>(regs.viewport_clip_control.geometry_clip.Value())));
+         }
+     }
+     // 0.2 (diagnostic): constant buffers of the captured frame. While a capture is armed, the first draw of

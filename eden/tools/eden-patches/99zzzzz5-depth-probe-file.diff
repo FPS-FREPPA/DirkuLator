@@ -1,0 +1,99 @@
+Build 051 (diagnostic only): the 050 depth-compare probe lines (EDEN_DEPTH_SAMPLER, EDEN_DEPTH_CBUF) also go to
+/data/eden-nx2/logs/depth-samplers.txt, flushed per line, because the restart after a crash empties eden_log.txt
+(050 lost them). Each line carries the shader key; program keys are now recorded for every lowered program.
+
+diff --git a/src/video_core/native_draw_trace.h b/src/video_core/native_draw_trace.h
+--- a/src/video_core/native_draw_trace.h
++++ b/src/video_core/native_draw_trace.h
+@@ -12,6 +12,7 @@
+ #include <atomic>
+ #include <cstdlib>
+ #include <cstring>
++#include <fstream>
+ #include <mutex>
+ #include <optional>
+ #include <span>
+@@ -71,12 +72,30 @@
+ 
+ /// Called when a native shader is lowered: remembers which key the program at this address has.
+ inline void RecordProgram(u64 program_address, u64 key) {
+-    if (!Enabled()) return;
+     auto& table = Programs();
+     std::scoped_lock lock{table.mutex};
+     table.key_by_address[program_address] = key;
+ }
+ 
++/// The key of the native program lowered at this address, 0 when none was.
++inline u64 KeyAt(u64 program_address) {
++    auto& table = Programs();
++    std::scoped_lock lock{table.mutex};
++    const auto it = table.key_by_address.find(program_address);
++    return it == table.key_by_address.end() ? 0 : it->second;
++}
++
++/// 051: probe lines that must survive a crash. After a crash the app restarts itself and the restart
++/// empties eden_log.txt, so each line is also appended to /data/eden-nx2/logs/depth-samplers.txt
++/// (truncated at the first line of a run, flushed per line).
++inline void DepthLog(const std::string& line) {
++    static std::mutex mutex;
++    static std::ofstream file("/data/eden-nx2/logs/depth-samplers.txt", std::ios::trunc);
++    std::scoped_lock lock{mutex};
++    file << line << '\n';
++    file.flush();
++}
++
+ /// The key of the native program at this address, if one was lowered there and it is traced.
+ inline std::optional<u64> TracedKeyAt(u64 program_address) {
+     if (!Enabled() || program_address == 0) return std::nullopt;
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -27,6 +27,7 @@
+ #include <fmt/format.h>
+ 
+ #include "video_core/gpu_write_watch.h"
++#include "video_core/native_draw_trace.h"
+ #include "video_core/renderer_vulkan/pipeline_helper.h"
+ 
+ #include "common/bit_field.h"
+@@ -761,11 +762,12 @@
+                                                     view.range.base.level, view.range.extent.levels,
+                                                     view.modification_tick);
+                         }
+-                        LOG_INFO(Render_Vulkan,
+-                                 "EDEN_DEPTH_SAMPLER stage={} prog={:#x} type={} handle=c{}[{:#x}] elem={} tic={} tsc={} {} "
++                        const std::string depth_line = fmt::format(
++                                 "EDEN_DEPTH_SAMPLER stage={} prog={:#x} key={:016x} type={} handle=c{}[{:#x}] elem={} tic={} tsc={} {} "
+                                  "raw={:016x}:{:016x}:{:016x}:{:016x} cmp={} func={} wrap={},{},{} filter={},{},{} "
+                                  "reduction={} lod_clamp={},{} bias={} border={},{},{},{} srgb={}",
+-                                 stage, program, static_cast<u32>(desc.type), desc.cbuf_index, desc.cbuf_offset, index,
++                                 stage, program, VideoCommon::NativeDrawTrace::KeyAt(program),
++                                 static_cast<u32>(desc.type), desc.cbuf_index, desc.cbuf_offset, index,
+                                  views[view_pos].index, tsc_index, view_text, tsc.raw[0], tsc.raw[1], tsc.raw[2],
+                                  tsc.raw[3], tsc.depth_compare_enabled.Value(),
+                                  static_cast<u32>(tsc.depth_compare_func.Value()),
+@@ -775,6 +777,8 @@
+                                  static_cast<u32>(tsc.reduction_filter.Value()), tsc.min_lod_clamp.Value(),
+                                  tsc.max_lod_clamp.Value(), tsc.LodBias(), tsc.border_color[0], tsc.border_color[1],
+                                  tsc.border_color[2], tsc.border_color[3], tsc.srgb_conversion.Value());
++                        VideoCommon::NativeDrawTrace::DepthLog(depth_line);
++                        LOG_INFO(Render_Vulkan, "{}", depth_line);
+                     }
+                 }
+                 if (stage_has_depth) {
+@@ -794,9 +798,12 @@
+                                                                  stage, program, slot);
+                             std::ofstream(path, std::ios::binary)
+                                 .write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+-                            LOG_INFO(Render_Vulkan, "EDEN_DEPTH_CBUF stage={} prog={:#x} c{} addr={:#x} size={} used={} file={}",
+-                                     stage, program, slot, cbuf.address, cbuf.size,
+-                                     info.constant_buffer_used_sizes[slot], path);
++                            const std::string cbuf_line = fmt::format(
++                                "EDEN_DEPTH_CBUF stage={} prog={:#x} key={:016x} c{} addr={:#x} size={} used={} file={}",
++                                stage, program, VideoCommon::NativeDrawTrace::KeyAt(program), slot, cbuf.address,
++                                cbuf.size, info.constant_buffer_used_sizes[slot], path);
++                            VideoCommon::NativeDrawTrace::DepthLog(cbuf_line);
++                            LOG_INFO(Render_Vulkan, "{}", cbuf_line);
+                         }
+                     }
+                 }

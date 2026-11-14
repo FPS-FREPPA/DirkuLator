@@ -1,0 +1,19 @@
+DirkuLator 0.5.11: TextureCache::UploadInChunks takes images of 16 MiB or more in 16 MiB rows (was 64/32). The 48 MiB + 48
+texture upload ended runs at Saria's wave with 541 MiB free in blocks of at most 42 MiB.
+
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -3850,8 +3850,10 @@
+ bool TextureCache<P>::UploadInChunks(Image& image) {
+     // A whole upload of a very large image needs a staging buffer of its full size (rounded up to
+     // a power of two: 1 GiB for 600 MiB of data), which can fail when memory is tight.
+-    constexpr u64 min_size = 64_MiB;
+-    constexpr u64 chunk_size = 32_MiB;
++    // 0.5.11: 16 MiB and 16 MiB rows (were 64 and 32): OoT's 48 MiB texture upload was refused with
++    // 541 MiB free in blocks of at most 42 MiB, at Saria's wave in 0.3, 0.5, 0.5.1, 0.5.4rc and 0.5.9.
++    constexpr u64 min_size = 16_MiB;
++    constexpr u64 chunk_size = 16_MiB;
+     constexpr ImageFlagBits excluded = ImageFlagBits::Sparse | ImageFlagBits::Converted |
+                                        ImageFlagBits::AcceleratedUpload | ImageFlagBits::Unbacked |
+                                        ImageFlagBits::TrimmedLevels;

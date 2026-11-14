@@ -1,0 +1,130 @@
+Build 027: the frame capture names the programs that last wrote each image (writers.txt next to
+index.txt). The 026 capture showed the overexposure in one 1920x1080 B10G11R11 target written after the
+correctly lit scene (R and G up to 65,000, B about 1), and an empty nearest shadow cascade; this tells
+which pipeline writes them. The rasterizer sets a per-thread writer around draws (vertex-slot and pixel
+program addresses), clears (rt0) and compute dispatches (program address); MarkModification copies it
+into the image. Diagnostic only: nothing drawn changes.
+
+diff --git a/src/video_core/native_draw_trace.h b/src/video_core/native_draw_trace.h
+--- a/src/video_core/native_draw_trace.h
++++ b/src/video_core/native_draw_trace.h
+@@ -83,6 +83,28 @@
+     return it->second;
+ }
+ 
++/// What writes images on this thread right now, for the frame capture's writers.txt (which program
++/// drew the overexposed target): the rasterizer sets it around a draw (kind 1: the vertex-slot and
++/// pixel programs' addresses), a clear (2: the first colour target) and a compute dispatch (3: the
++/// program's address); anything else (copies, blits, uploads) leaves kind 0. The addresses match
++/// the "Lowered native shader at ..." lines, which give their keys.
++struct Writer {
++    u32 kind{};
++    u64 first{};
++    u64 second{};
++};
++inline thread_local Writer current_writer{};
++struct WriterScope {
++    explicit WriterScope(Writer writer) {
++        current_writer = writer;
++    }
++    ~WriterScope() {
++        current_writer = {};
++    }
++    WriterScope(const WriterScope&) = delete;
++    WriterScope& operator=(const WriterScope&) = delete;
++};
++
+ /// Frames counted by RasterizerVulkan::TickFrame.
+ inline std::atomic<u64> frame{};
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -445,6 +445,11 @@
+                         regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height);
+         }
+     };
++    // The frame capture's writers.txt: the images this draw marks modified record its programs.
++    const auto& writer_regs = maxwell3d->regs;
++    const VideoCommon::NativeDrawTrace::WriterScope writer_scope{{
++        1, (u64{writer_regs.pipelines[1].reserved[0] & 0xff} << 32) | writer_regs.pipelines[1].reserved[1],
++        (u64{writer_regs.pipelines[5].reserved[0] & 0xff} << 32) | writer_regs.pipelines[5].reserved[1]}};
+     GraphicsPipeline* const pipeline{[&] {
+         Profile::Scope scope{Profile::Zone::PipelineLookup};
+         return pipeline_cache.CurrentGraphicsPipeline();
+@@ -1426,6 +1431,7 @@
+         return;
+     }
+ 
++    const VideoCommon::NativeDrawTrace::WriterScope writer_scope{{2, regs.rt[0].Address(), 0}};
+     std::scoped_lock lock{texture_cache.mutex};
+     texture_cache.UpdateRenderTargets(true);
+     const Framebuffer* const framebuffer = texture_cache.GetFramebuffer();
+@@ -1620,6 +1626,9 @@
+     buffer_cache.runtime.BeginStorageBatch(kepler_compute->IsNativeMode());
+     bool dispatched = false;
+     SCOPE_EXIT { if (dispatched) buffer_cache.runtime.FlushStorageWrites(); };
++    // The frame capture's writers.txt: storage images this dispatch writes record its program.
++    const VideoCommon::NativeDrawTrace::WriterScope writer_scope{
++        {3, kepler_compute->regs.code_loc.Address() + kepler_compute->launch_description.program_start, 0}};
+     if (!pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache,
+                              texture_cache)) {
+         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute resources unavailable");
+diff --git a/src/video_core/texture_cache/image_base.h b/src/video_core/texture_cache/image_base.h
+--- a/src/video_core/texture_cache/image_base.h
++++ b/src/video_core/texture_cache/image_base.h
+@@ -124,6 +124,10 @@
+     // Zero means this image has not used the CPU async decoder (e.g. async unswizzle).
+     u64 async_decode_generation = 0;
+     u64 modification_tick = 0;
++    // The last GPU write's programs (NativeDrawTrace::current_writer), for the frame capture.
++    u32 last_writer_kind = 0;
++    u64 last_writer_first = 0;
++    u64 last_writer_second = 0;
+     size_t lru_index = SIZE_MAX;
+ 
+     std::array<u32, MAX_MIP_LEVELS> mip_level_offsets{};
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -7,6 +7,7 @@
+ #pragma once
+ 
+ #include "video_core/native_diagnostics.h"
++#include "video_core/native_draw_trace.h"
+ #include "video_core/native_texture_capture.h"
+ #include <chrono>
+ #include <new>
+@@ -509,6 +510,11 @@
+         std::ofstream index(folder / "index.txt");
+         index << "# order gpu_addr pixel_format width height layers levels bytes level0_offset "
+                  "row_length image_height modification_tick flags\n";
++        // Which programs last wrote each image: their addresses are in the "Lowered native shader
++        // at ..." lines of the log, with their keys.
++        std::ofstream writers(folder / "writers.txt");
++        writers << "# order gpu_addr kind (1 draw: vertex-slot pixel, 2 clear: rt0, 3 compute: program, "
++                   "0 copy/blit/upload) first second\n";
+         unsigned order{};
+         for (const ImageId image_id : drawn) {
+             Image& image = slot_images[image_id];
+@@ -532,6 +538,9 @@
+                   << first.buffer_row_length << ' ' << first.buffer_image_height << ' '
+                   << image.modification_tick << ' ' << fmt::format("{:#x}", static_cast<u32>(image.flags))
+                   << ' ' << name << '\n';
++            writers << order << ' ' << fmt::format("{:#x} {} {:#x} {:#x}", image.gpu_addr, image.last_writer_kind,
++                                                   image.last_writer_first, image.last_writer_second)
++                    << '\n';
+             ++order;
+         }
+         LOG_WARNING(HW_GPU, "EDEN_FRAME_CAPTURE frame={} images={} folder={}", frame_tick, order,
+@@ -3898,6 +3907,10 @@
+     image.flags |= ImageFlagBits::GpuModified;
+     VideoCommon::GpuWrittenPages::Mark(image.cpu_addr, image.cpu_addr_end - image.cpu_addr);
+     image.modification_tick = ++modification_tick;
++    const auto& writer = NativeDrawTrace::current_writer;
++    image.last_writer_kind = writer.kind;
++    image.last_writer_first = writer.first;
++    image.last_writer_second = writer.second;
+ }
+ 
+ template <class P>

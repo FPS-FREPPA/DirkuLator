@@ -1,0 +1,90 @@
+From the 023 console run: the two compute programs still failing (b38668a2c75d97ff and
+0ba3144c5df5d1f9, "Invalid U16 selector 1", about 35 skipped dispatches a second) came from the
+I2F lowering. Ampere's selector counts half-words for a 16-bit source, Maxwell's counts bytes, so
+the high half was written as byte 1. It is now byte 2. Bumps the translator salt.
+Handle programs also take a word of a vector merged from branches (703 of the 023 run's 1024
+handle-zero cases: CompositeExtractU32x4 of a Phi of 128-bit loads), keeping the defined incoming
+value as the Phi rule does.
+
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -3517,7 +3517,9 @@
+                 return fail(index, "native byte-to-float conversion mode");
+             emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{size} << 10) |
+                  (u64{insn.Bits(74, 1)} << 13) | (u64{insn.Bits(78, 2)} << 39) |
+-                 (u64{selector} << 41) | (u64{i2f_source} << 20));
++                 // Maxwell's selector counts bytes; Ampere's counts half-words for a 16-bit source,
++                 // so the high half is byte 2 ("Invalid U16 selector 1" lost two compute programs).
++                 (u64{size == 1 ? selector * 2 : selector} << 41) | (u64{i2f_source} << 20));
+             break;
+         }
+         case 0x245: case 0xa45: case 0xc45: { // I2FP.F32.U32
+diff --git a/src/shader_recompiler/frontend/ampere/native.h b/src/shader_recompiler/frontend/ampere/native.h
+--- a/src/shader_recompiler/frontend/ampere/native.h
++++ b/src/shader_recompiler/frontend/ampere/native.h
+@@ -43,7 +43,7 @@
+ 
+ // Salt mixed into the pipeline cache identity of native-translated programs. Bump it whenever the
+ // native translation changes so cached results of an older translator are never reused.
+-inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a00011ULL;
++inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a00012ULL;
+ 
+ // Maxwell Location offset of native instruction `index` (same mapping the lowering uses).
+ [[nodiscard]] constexpr u32 LocationOf(u32 index) {
+diff --git a/src/shader_recompiler/ir_opt/texture_pass.cpp b/src/shader_recompiler/ir_opt/texture_pass.cpp
+--- a/src/shader_recompiler/ir_opt/texture_pass.cpp
++++ b/src/shader_recompiler/ir_opt/texture_pass.cpp
+@@ -4,6 +4,7 @@
+ // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <functional>
+ #include <cstdlib>
+ #include <algorithm>
+ #include <atomic>
+@@ -575,15 +576,35 @@
+     case IR::Opcode::CompositeExtractU32x4: {
+         const IR::Value element{inst->Arg(1)};
+         if (!element.IsImmediate() || inst->Arg(0).IsImmediate()) return false;
+-        const IR::Inst* const source{inst->Arg(0).InstRecursive()};
+-        switch (source->GetOpcode()) {
+-        case IR::Opcode::CompositeConstructU32x2:
+-        case IR::Opcode::CompositeConstructU32x3:
+-        case IR::Opcode::CompositeConstructU32x4:
+-            return BuildHandleProgram(source->Arg(element.U32()), code, budget, block);
+-        default:
+-            return load_word(source, element.U32() * 4);
+-        }
++        // The word of a wide load, of a vector the shader assembled, or of a vector merged from
++        // branches (a 128-bit load on each path: the 023 run's most common handle-zero case). A
++        // merge keeps its defined incoming value, as Phi does below.
++        const u32 word{element.U32()};
++        const std::function<bool(const IR::Inst*, int)> extract = [&](const IR::Inst* source, int depth) {
++            if (depth > 16) return false;
++            switch (source->GetOpcode()) {
++            case IR::Opcode::Identity:
++                return !source->Arg(0).IsImmediate() && extract(source->Arg(0).InstRecursive(), depth + 1);
++            case IR::Opcode::CompositeConstructU32x2:
++            case IR::Opcode::CompositeConstructU32x3:
++            case IR::Opcode::CompositeConstructU32x4:
++                return word < source->NumArgs() && BuildHandleProgram(source->Arg(word), code, budget, block);
++            case IR::Opcode::Phi: {
++                const size_t start{code.size()};
++                for (size_t arg = 0; arg < source->NumArgs(); ++arg) {
++                    const IR::Value incoming{source->Arg(arg)};
++                    if (incoming.IsImmediate() || IsUndefined(incoming.InstRecursive()->GetOpcode())) continue;
++                    if (extract(incoming.InstRecursive(), depth + 1)) return true;
++                    code.resize(start);
++                }
++                g_handle_failure = IR::Opcode::Phi;
++                return false;
++            }
++            default:
++                return load_word(source, word * 4);
++            }
++        };
++        return extract(inst->Arg(0).InstRecursive(), 0);
+     }
+     case IR::Opcode::Phi: {
+         // Keep the incoming value that is defined; of two, the one made uniform (the

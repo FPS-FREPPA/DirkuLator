@@ -1,0 +1,55 @@
+Read a native draw's base vertex, base instance and draw ID from the draw. Adapted from Lichii #806
+(huseinalsharra14-sketch), which brought back OoT's instanced vegetation. NVN keeps these in c0
+0x640/0x644/0x648 and native draw macros write them there, but the copy the shader sees can lag
+the macro's writes. Unlike #806 this applies only to native Switch 2 programs, since Eden's HLE
+macros for Switch 1 titles map 0x640 to the base instance in some draws. Goes with 99zzzz2, which
+gives a deferred instance batch the bases of its first draw. Bumps the translator salt.
+/data/eden-nx2/c0-draw-parameters.txt restores the c0 copy.
+
+diff --git a/src/video_core/shader_environment.cpp b/src/video_core/shader_environment.cpp
+--- a/src/video_core/shader_environment.cpp
++++ b/src/video_core/shader_environment.cpp
+@@ -804,6 +804,31 @@
+ 
+ std::optional<Shader::ReplaceConstant> GraphicsEnvironment::GetReplaceConstBuffer(u32 bank,
+                                                                                   u32 offset) {
++    // NVN keeps the draw's base vertex, base instance and draw ID in c0 0x640/0x644/0x648. Native
++    // draw macros write them there and the shader reads that copy, which can lag the macro's
++    // writes, so read them from the draw. Only for native Switch 2 programs: the HLE macros of
++    // Switch 1 titles map these slots differently. The replacement is cached with the shader.
++    static const bool use_c0 = std::getenv("EDEN_NX2_C0_DRAW_PARAMETERS") != nullptr;
++    if (bank == 0 && !use_c0 && maxwell3d->GetNativeMacroEngine().native_turing) {
++        std::optional<Shader::ReplaceConstant> forced;
++        switch (offset) {
++        case 0x640:
++            forced = Shader::ReplaceConstant::BaseVertex;
++            break;
++        case 0x644:
++            forced = Shader::ReplaceConstant::BaseInstance;
++            break;
++        case 0x648:
++            forced = Shader::ReplaceConstant::DrawID;
++            break;
++        default:
++            break;
++        }
++        if (forced) {
++            cbuf_replacements.emplace(u64{offset}, *forced);
++            return forced;
++        }
++    }
+     if (!has_hle_engine_state) {
+         return std::nullopt;
+     }
+diff --git a/src/shader_recompiler/frontend/ampere/native.h b/src/shader_recompiler/frontend/ampere/native.h
+--- a/src/shader_recompiler/frontend/ampere/native.h
++++ b/src/shader_recompiler/frontend/ampere/native.h
+@@ -43,7 +43,7 @@
+ 
+ // Salt mixed into the pipeline cache identity of native-translated programs. Bump it whenever the
+ // native translation changes so cached results of an older translator are never reused.
+-inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a0000bULL;
++inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a0000cULL;
+ 
+ // Maxwell Location offset of native instruction `index` (same mapping the lowering uses).
+ [[nodiscard]] constexpr u32 LocationOf(u32 index) {

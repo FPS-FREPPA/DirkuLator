@@ -1,0 +1,43 @@
+From the 024 console run: 571 of the handle-zero cases were reported as "CompositeExtractU32x4
+stopped_at=Phi", which hid what each path really loads from. The merge now keeps the blocker found
+on its paths, and EDEN_TEXTURE_HANDLE_FALLBACK names the incoming values of a merged root
+(paths=...) and the shader stage. Diagnostic only: no change to what is drawn.
+
+diff --git a/src/shader_recompiler/ir_opt/texture_pass.cpp b/src/shader_recompiler/ir_opt/texture_pass.cpp
+--- a/src/shader_recompiler/ir_opt/texture_pass.cpp
++++ b/src/shader_recompiler/ir_opt/texture_pass.cpp
+@@ -597,7 +597,7 @@
+                     if (extract(incoming.InstRecursive(), depth + 1)) return true;
+                     code.resize(start);
+                 }
+-                g_handle_failure = IR::Opcode::Phi;
++                if (g_handle_failure == IR::Opcode::Void) g_handle_failure = IR::Opcode::Phi;
+                 return false;
+             }
+             default:
+@@ -1023,9 +1023,23 @@
+             static std::atomic<u32> handle_fallbacks{};
+             if (const u32 count = ++handle_fallbacks; count <= 1024 || (count & (count - 1)) == 0) {
+                 const auto* root = inst.Arg(0).TryInstRecursive();
+-                std::fprintf(stderr, "EDEN_TEXTURE_HANDLE_FALLBACK root=%s stopped_at=%s budget=%d count=%u\n",
++                std::string paths;
++                const IR::Inst* merge = root;
++                if (merge && merge->GetOpcode() != IR::Opcode::Phi && merge->NumArgs() > 0 &&
++                    !merge->Arg(0).IsImmediate()) {
++                    merge = merge->Arg(0).InstRecursive();
++                }
++                if (merge && merge->GetOpcode() == IR::Opcode::Phi) {
++                    for (size_t arg = 0; arg < merge->NumArgs() && arg < 4; ++arg) {
++                        const IR::Value incoming{merge->Arg(arg)};
++                        paths += arg ? "," : "";
++                        paths += incoming.IsImmediate() ? "imm" : std::string(IR::NameOf(incoming.InstRecursive()->GetOpcode()));
++                    }
++                }
++                std::fprintf(stderr, "EDEN_TEXTURE_HANDLE_FALLBACK root=%s stopped_at=%s paths=%s stage=%d budget=%d count=%u\n",
+                              root ? std::string(IR::NameOf(root->GetOpcode())).c_str() : "immediate",
+-                             std::string(IR::NameOf(g_handle_failure)).c_str(), budget, count);
++                             std::string(IR::NameOf(g_handle_failure)).c_str(), paths.empty() ? "-" : paths.c_str(),
++                             static_cast<int>(program.stage), budget, count);
+             }
+         }
+         std::optional<ConstBufferAddr> track_addr;

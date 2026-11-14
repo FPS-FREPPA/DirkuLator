@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ProsperoEden - Regenerate the launcher's baked assets (font atlas and art).
+# DirkuLator - Regenerate the launcher's baked assets (font atlas and art).
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
 #

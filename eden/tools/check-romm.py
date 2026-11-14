@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ProsperoEden - Check of the save sync and the RomM backends against real RomM servers in Docker.
+# DirkuLator - Check of the save sync and the RomM backends against real RomM servers in Docker.
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
 """check-romm.py [RomM version ...]

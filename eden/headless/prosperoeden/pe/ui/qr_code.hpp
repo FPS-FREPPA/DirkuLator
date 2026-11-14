@@ -1,4 +1,4 @@
-// ProsperoEden - Launcher: a QR code of a text (an address), for a phone to open it.
+// DirkuLator - Launcher: a QR code of a text (an address), for a phone to open it.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

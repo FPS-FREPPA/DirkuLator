@@ -1,6 +1,6 @@
-# Building ProsperoEden
+# Building DirkuLator
 
-ProsperoEden builds on Linux (Ubuntu 26.04; WSL works). One command builds the release:
+DirkuLator builds on Linux (Ubuntu 26.04; WSL works). One command builds the release:
 
 ```bash
 make
@@ -9,15 +9,15 @@ make
 The first run fetches every dependency at its pinned revision, builds the RADV driver and
 Eden for the PS5, and writes the release files to `dist/`:
 
-- `ProsperoEden-vX.Y.Z.zip`: the `PPSA99862` folder to copy to `/data/homebrew/PPSA99862`;
+- `DirkuLator-vX.Y.Z.zip`: the `PPSA99862` folder to copy to `/data/homebrew/PPSA99862`;
 - `SHA256SUMS` (the ZIP's checksum) and `release-notes.md`.
 
 The app package includes an exact-title one-shot helper built from the pinned upstream
 [PS5-Lapy-JB-Daemon](https://github.com/blackbearreloaded/PS5-Lapy-JB-Daemon) source. Its generated
 manifest, ELF hash, protocol hash, title and required retry feature are checked before packaging.
-At runtime a resident Lapy service gets the first bounded opportunity; otherwise ProsperoEden
+At runtime a resident Lapy service gets the first bounded opportunity; otherwise DirkuLator
 sends the packaged helper to the local ELF loader on TCP port 9021. Without that loader or a
-resident service, ProsperoEden has no access to its data and says so; it keeps no second copy of it in its sandbox.
+resident service, DirkuLator has no access to its data and says so; it keeps no second copy of it in its sandbox.
 
 The pinned commit includes the donor-release and firmware 13.60 corrections merged in
 [PS5-Lapy-JB-Daemon PR #48](https://github.com/mpereiraesaa/PS5-Lapy-JB-Daemon/pull/48) and
@@ -27,7 +27,7 @@ target-lifetime and fail-closed accounting changes from
 The previous `54a095c` pin passed five automated launch/elevate/close cycles on both firmware 6.02
 and 12.70 with root `/data` access and balanced donors. The pinned `57fcc19` helper completed the
 target-exit stress and a full one-shot elevation on firmware 12.70; it still requires an attended
-ProsperoEden qualification run on firmware 6.02.
+DirkuLator qualification run on firmware 6.02.
 
 The first build takes a while (RADV and Eden are large). Later builds reuse everything that
 already exists: the dependencies, this checkout's build cache in
@@ -39,7 +39,7 @@ already exists: the dependencies, this checkout's build cache in
 |---|---|
 | `make` / `make release` | Release files in `dist/` |
 | `make package` | Only the app folder, `build/release/PPSA99862` |
-| `make install PS5_HOST=<address>` | Copy `build/release/PPSA99862` to a console over FTP (close ProsperoEden first) |
+| `make install PS5_HOST=<address>` | Copy `build/release/PPSA99862` to a console over FTP (close DirkuLator first) |
 | `make dev DEV_TITLE=<title ID>` | Development build, `build/dev/PPSA99862` (or `EDEN_DEV_PACKAGE_DIR`): profiling counters, `dev-settings.txt` switches, boots the given title |
 | `make test` | Host (Linux) build of the emulator and its test suites |
 | `make deps` | Fetch missing dependencies at their pinned revisions |
@@ -209,8 +209,8 @@ dependencies are reused instead of fetched) for a build on your own machine.
   entry stored as 0777) and keeps `dist/` (the ZIP, `SHA256SUMS` and `release-notes.md`) as a
   7-day artifact. Nothing is published. A push to
   `main` builds nothing; `main` is built the same way every night, to keep the caches a
-  release's build starts from. The artifact is `ProsperoEden`; for
-  a pull request it is `ProsperoEden-PR<number>-<commit>`, with the first seven characters of
+  release's build starts from. The artifact is `DirkuLator`; for
+  a pull request it is `DirkuLator-PR<number>-<commit>`, with the first seven characters of
   the pull request's own head commit. A newer push to a pull request, or a newer manual or
   nightly run on the same branch, cancels the run in progress.
 - **Tag `vX.Y.Z`** (by itself, when the tag is pushed): builds and checks them the same way, checks that the tag matches the package
@@ -219,7 +219,7 @@ dependencies are reused instead of fetched) for a build on your own machine.
   for a tag, 7 days otherwise.
 - A tag's or a manual run's ZIP is attested (signed build provenance): a release ZIP built by
   the workflow can be checked with
-  `gh attestation verify ProsperoEden-vX.Y.Z.zip -R blackbearreloaded/ProsperoEden` (GitHub
+  `gh attestation verify DirkuLator-vX.Y.Z.zip -R blackbearreloaded/ProsperoEden` (GitHub
   CLI). This covers releases built by GitHub Actions from now on (after v1.000.090), not
   earlier ones.
 
@@ -240,4 +240,4 @@ To cut a release:
 3. Test the build on a console.
 4. Push a `vX.Y.Z` tag.
 5. Keep `build/symbols/ProsperoEden-vX.Y.Z.elf` from the build that was published (crash reports
-   are read with it): download the tag run's `ProsperoEden-symbols` artifact before it expires.
+   are read with it): download the tag run's `DirkuLator-symbols` artifact before it expires.

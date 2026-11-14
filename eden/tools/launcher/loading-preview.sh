@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ProsperoEden - Draw the game loading screen on a PC (Mesa surfaceless EGL) to PNG files.
+# DirkuLator - Draw the game loading screen on a PC (Mesa surfaceless EGL) to PNG files.
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
 #

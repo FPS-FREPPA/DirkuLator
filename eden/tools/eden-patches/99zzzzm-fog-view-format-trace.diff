@@ -1,0 +1,338 @@
+Build 030A, instrumentation only (GPT's 029 review, handoff2.md section 5): nothing changes in rendering.
+- readers.txt binds are recorded after the feedback substitution (ReplaceColorFeedbackViews) and carry
+  the image's and the view's pixel formats and whether the feedback copy was bound instead.
+- With /data/eden-nx2/capture-watch.txt (EDEN_NX2_CAPTURE_WATCH, guest addresses) a capture also writes
+  sequence.txt: the armed frame's draws and dispatches that bind or render to a watched image, in order,
+  with render target 0 and its format. And stages/: up to 12 snapshots of the watched image before each
+  draw that touches it and after each draw or dispatch that touches it (pre-fog, post-fog, post-pack).
+  Snapshots are only taken at a draw, so the GPU wait never falls inside a compute dispatch.
+
+diff --git a/src/video_core/native_draw_trace.h b/src/video_core/native_draw_trace.h
+--- a/src/video_core/native_draw_trace.h
++++ b/src/video_core/native_draw_trace.h
+@@ -8,6 +8,7 @@
+ // else runs.
+ #include <array>
+ #include <compare>
++#include <compare>
+ #include <atomic>
+ #include <cstdlib>
+ #include <cstring>
+@@ -18,6 +19,7 @@
+ #include <unordered_map>
+ #include <unordered_set>
+ #include <vector>
++#include <vector>
+ #include "common/common_types.h"
+ 
+ namespace VideoCommon::NativeDrawTrace {
+@@ -101,15 +103,73 @@
+ /// (texture_cache.h FillImageViews): the capture writes them as readers.txt, so the pass that
+ /// samples a captured image is known, not only the one that last wrote it (writers.txt). An image
+ /// is identified by its address and the layers of the view, as the same address is reused.
++/// Since 030 a bind is recorded after the feedback substitution (ReplaceColorFeedbackViews), with the
++/// image's and the view's pixel formats and whether the view was swapped for the feedback copy: a view
++/// format can differ from its image's (a packed RGB9E5 image read through another 32-bit format).
+ struct Read {
+     u64 image{};
+     u32 base_layer{};
+     u32 layers{};
+     Writer reader{};
++    u32 image_format{};
++    u32 view_format{};
++    bool substituted{};
+     auto operator<=>(const Read&) const = default;
+ };
+ inline bool capture_reads_armed{};
+ inline std::vector<Read> capture_reads;
++
++/// Ordered log of the armed frame's draws and dispatches that bind or render to a watched address
++/// (EDEN_NX2_CAPTURE_WATCH, /data/eden-nx2/capture-watch.txt): sequence.txt, so the order of the
++/// passes on one image (scene, fog blend, pack) is known, not only its last writer.
++struct SequenceEntry {
++    u64 sequence{};
++    bool compute{};
++    Writer program{};
++    u64 rt0{};
++    u32 rt0_format{};
++    Read bind{};
++    u32 image_id{};
++    u32 source_image_id{};
++};
++inline u64 capture_sequence{};
++inline std::vector<SequenceEntry> capture_sequence_log;
++
++/// Watched guest addresses, parsed once from EDEN_NX2_CAPTURE_WATCH (hex, separated by commas).
++inline const std::vector<u64>& CaptureWatch() {
++    static const std::vector<u64> watch = [] {
++        std::vector<u64> addresses;
++        if (const char* value = std::getenv("EDEN_NX2_CAPTURE_WATCH")) {
++            const char* p = value;
++            while (*p) {
++                char* end = nullptr;
++                const u64 address = std::strtoull(p, &end, 16);
++                if (end == p) {
++                    ++p;
++                    continue;
++                }
++                if (address) addresses.push_back(address);
++                p = end;
++            }
++        }
++        return addresses;
++    }();
++    return watch;
++}
++inline bool IsWatched(u64 address) {
++    for (const u64 watched : CaptureWatch()) {
++        if (watched == address) return true;
++    }
++    return false;
++}
++
++/// Stage snapshots of a watched image in the armed frame: before a draw that touches it, and after
++/// a draw or dispatch that touches it (taken at the next draw). At most kStageLimit per capture.
++inline constexpr u32 kStageLimit = 12;
++inline u32 stage_count{};
++inline bool stage_post_pending{};
++inline u32 stage_post_image{};
++inline u64 stage_post_sequence{};
+ struct WriterScope {
+     explicit WriterScope(Writer writer) {
+         current_writer = writer;
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -490,10 +490,24 @@
+     if (NativeDrawTrace::capture_reads_armed && !capture_now) {
+         NativeDrawTrace::capture_reads_armed = false;
+         NativeDrawTrace::capture_reads.clear();
++        NativeDrawTrace::capture_sequence_log.clear();
+     }
+     if (!capture_now && capture_request && capture_dir && capture_polls++ % 30 == 0 &&
+         std::filesystem::exists(capture_request, capture_error)) {
+         NativeDrawTrace::capture_reads.clear();
++        NativeDrawTrace::capture_sequence_log.clear();
++        NativeDrawTrace::capture_sequence = 0;
++        NativeDrawTrace::stage_count = 0;
++        NativeDrawTrace::stage_post_pending = false;
++        const std::filesystem::path pending = std::filesystem::path{capture_dir} / "stages-pending";
++        std::filesystem::remove_all(pending, capture_error);
++        std::filesystem::create_directories(pending, capture_error);
++        {
++            std::ofstream stage_index(pending / "index.txt");
++            stage_index << "# order gpu_addr pixel_format width height layers levels bytes level0_offset "
++                           "row_length image_height modification_tick flags name (stage snapshots: <seq>-pre is "
++                           "before that pass, <seq>-post after it; see sequence.txt)\n";
++        }
+         NativeDrawTrace::capture_reads_armed = true;
+     }
+     if (capture_now) {
+@@ -564,14 +578,36 @@
+             }
+             std::ofstream readers(folder / "readers.txt");
+             readers << "# gpu_addr base_layer layers kind (1 draw: vertex-slot pixel, 3 compute: program) "
+-                       "first second binds\n";
++                       "first second binds image_format view_format substituted (pixel formats as in "
++                       "surface.h; substituted 1: the feedback copy was bound instead)\n";
+             for (const auto& [read, count] : reads) {
+-                readers << fmt::format("{:#x} {} {} {} {:#x} {:#x} {}\n", read.image, read.base_layer,
++                readers << fmt::format("{:#x} {} {} {} {:#x} {:#x} {} {} {} {}\n", read.image, read.base_layer,
+                                        read.layers, read.reader.kind, read.reader.first,
+-                                       read.reader.second, count);
++                                       read.reader.second, count, read.image_format, read.view_format,
++                                       read.substituted ? 1 : 0);
++            }
++            // sequence.txt: the armed frame's passes on watched images, in order.
++            std::ofstream sequence(folder / "sequence.txt");
++            sequence << "# sequence kind first second rt0 rt0_format(render target format) image image_format "
++                        "view_format base_layer layers substituted image_id source_image_id (image 0x0: renders to "
++                        "rt0 without sampling it)\n";
++            for (const auto& entry : NativeDrawTrace::capture_sequence_log) {
++                sequence << fmt::format("{} {} {:#x} {:#x} {:#x} {} {:#x} {} {} {} {} {} {} {}\n", entry.sequence,
++                                        entry.program.kind, entry.program.first, entry.program.second, entry.rt0,
++                                        entry.rt0_format, entry.bind.image, entry.bind.image_format,
++                                        entry.bind.view_format, entry.bind.base_layer, entry.bind.layers,
++                                        entry.bind.substituted ? 1 : 0, entry.image_id, entry.source_image_id);
++            }
++            const std::filesystem::path pending = std::filesystem::path{capture_dir} / "stages-pending";
++            if (NativeDrawTrace::stage_count != 0) {
++                std::filesystem::rename(pending, folder / "stages", capture_error);
++            } else {
++                std::filesystem::remove_all(pending, capture_error);
+             }
+             NativeDrawTrace::capture_reads_armed = false;
+             NativeDrawTrace::capture_reads.clear();
++            NativeDrawTrace::capture_sequence_log.clear();
++            NativeDrawTrace::stage_post_pending = false;
+         }
+         LOG_WARNING(HW_GPU, "EDEN_FRAME_CAPTURE frame={} images={} folder={}", frame_tick, order,
+                     folder.string());
+@@ -640,16 +676,6 @@
+         }
+         for (ImageViewInOut& view : views) {
+             view.id = VisitImageView(view.index, compute);
+-            if (NativeDrawTrace::capture_reads_armed && view.id != NULL_IMAGE_VIEW_ID &&
+-                NativeDrawTrace::capture_reads.size() < (1u << 20)) {
+-                const ImageViewBase& image_view = slot_image_views[view.id];
+-                if (!image_view.IsBuffer() && image_view.image_id) {
+-                    NativeDrawTrace::capture_reads.push_back(
+-                        {slot_images[image_view.image_id].gpu_addr,
+-                         static_cast<u32>(image_view.range.base.layer),
+-                         static_cast<u32>(image_view.range.extent.layers), NativeDrawTrace::current_writer});
+-                }
+-            }
+             if (capture && view.id != NULL_IMAGE_VIEW_ID) {
+                 const ImageViewBase& image_view = slot_image_views[view.id];
+                 if (!image_view.IsBuffer() && image_view.image_id) {
+@@ -667,9 +693,133 @@
+             }
+         }
+     } while (has_deleted_images || (blacklist && has_blacklisted));
++    // A capture records what each bind finally samples, so the views before the feedback swap are kept.
++    const bool armed = NativeDrawTrace::capture_reads_armed;
++    boost::container::small_vector<ImageViewId, 32> unreplaced;
++    if (armed) {
++        for (const ImageViewInOut& view : views) {
++            unreplaced.push_back(view.id);
++        }
++    }
+     if (!compute) {
+         ReplaceColorFeedbackViews(views);
+     }
++    if (armed) {
++        RecordCaptureBinds(views, unreplaced, compute);
++    }
++}
++
++template <class P>
++void TextureCache<P>::RecordCaptureBinds(std::span<const ImageViewInOut> views,
++                                         std::span<const ImageViewId> unreplaced, bool compute) {
++    namespace Trace = NativeDrawTrace;
++    const u64 sequence = Trace::capture_sequence++;
++    const bool watching = !Trace::CaptureWatch().empty();
++    // A watched image an earlier draw or dispatch touched: its state after that pass. Taken at a
++    // draw only, so the GPU wait never falls inside a compute dispatch's storage batch.
++    if (!compute && Trace::stage_post_pending) {
++        Trace::stage_post_pending = false;
++        CaptureStageSnapshot(ImageId{Trace::stage_post_image}, "post", Trace::stage_post_sequence);
++    }
++    u64 rt0 = 0;
++    u32 rt0_format = 0;
++    if (!compute && maxwell3d != nullptr) {
++        const auto& regs = maxwell3d->regs;
++        if (regs.rt_control.count > 0) {
++            const auto& rt = regs.rt[regs.rt_control.Map(0)];
++            if (rt.format != Tegra::RenderTargetFormat::NONE) {
++                rt0 = rt.Address();
++                rt0_format = static_cast<u32>(rt.format);
++            }
++        }
++    }
++    ImageId touched{};
++    bool rt0_logged = false;
++    for (size_t i = 0; i < views.size(); ++i) {
++        const ImageViewId view_id = views[i].id;
++        if (view_id == NULL_IMAGE_VIEW_ID) {
++            continue;
++        }
++        const ImageViewBase& image_view = slot_image_views[view_id];
++        if (image_view.IsBuffer() || !image_view.image_id) {
++            continue;
++        }
++        const Image& image = slot_images[image_view.image_id];
++        const bool substituted = i < unreplaced.size() && unreplaced[i] != view_id;
++        const Trace::Read read{image.gpu_addr,
++                               static_cast<u32>(image_view.range.base.layer),
++                               static_cast<u32>(image_view.range.extent.layers),
++                               Trace::current_writer,
++                               static_cast<u32>(image.info.format),
++                               static_cast<u32>(image_view.format),
++                               substituted};
++        if (Trace::capture_reads.size() < (1u << 20)) {
++            Trace::capture_reads.push_back(read);
++        }
++        if (!watching || !Trace::IsWatched(image.gpu_addr)) {
++            continue;
++        }
++        // The guest image behind a feedback copy: the one the draw writes.
++        ImageId source = image_view.image_id;
++        if (substituted && unreplaced[i] != NULL_IMAGE_VIEW_ID) {
++            source = slot_image_views[unreplaced[i]].image_id;
++        }
++        if (!touched) {
++            touched = source;
++        }
++        rt0_logged |= rt0 == image.gpu_addr;
++        if (Trace::capture_sequence_log.size() < 4096) {
++            Trace::capture_sequence_log.push_back({sequence, compute, Trace::current_writer, rt0, rt0_format, read,
++                                                   image_view.image_id.index, source.index});
++        }
++    }
++    if (watching && rt0 != 0 && !rt0_logged && Trace::IsWatched(rt0) &&
++        Trace::capture_sequence_log.size() < 4096) {
++        // Renders to a watched image without sampling it.
++        Trace::capture_sequence_log.push_back({sequence, compute, Trace::current_writer, rt0, rt0_format, {}, 0, 0});
++    }
++    if (touched) {
++        if (!compute) {
++            CaptureStageSnapshot(touched, "pre", sequence);
++        }
++        Trace::stage_post_pending = true;
++        Trace::stage_post_image = touched.index;
++        Trace::stage_post_sequence = sequence;
++    }
++}
++
++template <class P>
++void TextureCache<P>::CaptureStageSnapshot(ImageId image_id, const char* when, u64 sequence) {
++    namespace Trace = NativeDrawTrace;
++    static const char* const capture_dir = std::getenv("EDEN_NX2_CAPTURE_DIR");
++    if (capture_dir == nullptr || Trace::stage_count >= Trace::kStageLimit) {
++        return;
++    }
++    Image& image = slot_images[image_id];
++    const auto& info = image.info;
++    if (info.type != ImageType::e2D || info.num_samples != 1 || !image.unswizzled_size_bytes ||
++        image.unswizzled_size_bytes > 64_MiB ||
++        True(image.flags & (ImageFlagBits::Unbacked | ImageFlagBits::IsDecoding))) {
++        return;
++    }
++    const std::filesystem::path folder = std::filesystem::path{capture_dir} / "stages-pending";
++    auto map = runtime.DownloadStagingBuffer(image.unswizzled_size_bytes);
++    const auto copies = FixSmallVectorADL(FullDownloadCopies(info));
++    image.DownloadMemory(map, copies);
++    runtime.Finish();
++    const u32 order = Trace::stage_count++;
++    const std::string name = fmt::format("{:02}-seq{}-{}-{:x}-f{}-{}x{}.raw", order, sequence, when, image.gpu_addr,
++                                         static_cast<u32>(info.format), info.size.width, info.size.height);
++    std::ofstream raw(folder / name, std::ios::binary);
++    raw.write(reinterpret_cast<const char*>(map.mapped_span.data()),
++              static_cast<std::streamsize>(image.unswizzled_size_bytes));
++    const auto& first = copies.front();
++    std::ofstream index(folder / "index.txt", std::ios::app);
++    index << order << ' ' << fmt::format("{:#x}", image.gpu_addr) << ' ' << static_cast<u32>(info.format) << ' '
++          << info.size.width << ' ' << info.size.height << ' ' << info.resources.layers << ' '
++          << info.resources.levels << ' ' << image.unswizzled_size_bytes << ' ' << first.buffer_offset << ' '
++          << first.buffer_row_length << ' ' << first.buffer_image_height << ' ' << image.modification_tick << ' '
++          << fmt::format("{:#x}", static_cast<u32>(image.flags)) << ' ' << name << '\n';
+ }
+ 
+ template <class P>
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -228,6 +228,13 @@
+     /// Points sampled views of the draw's own colour targets at copies taken before the draw.
+     void ReplaceColorFeedbackViews(std::span<ImageViewInOut> views);
+ 
++    /// Frame capture (030A): records the armed frame's binds after the feedback substitution.
++    void RecordCaptureBinds(std::span<const ImageViewInOut> views, std::span<const ImageViewId> unreplaced,
++                            bool compute);
++
++    /// Frame capture (030A): downloads one image into the pending stage folder.
++    void CaptureStageSnapshot(ImageId image_id, const char* when, u64 sequence);
++
+     /// Handle feedback loops during draws.
+     void CheckFeedbackLoop(std::span<const ImageViewInOut> views);
+ 

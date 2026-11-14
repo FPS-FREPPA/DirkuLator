@@ -1,0 +1,27 @@
+DirkuLator 0.5.1: diagnostic only (no rendering change). EDEN_TASK_PROBE may probe any task draw of a submission,
+not only the first (decoded from the draw's base within the 4 MiB copied), to reach the 12-task canopy draws.
+
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -881,8 +881,9 @@
+             ++counted_arena.task_draws;
+             counted_arena.task_groups += groups;
+             counted_arena.block_words += block_bytes / 4;
+-            // 048: EDEN_TASK_PROBE. Only the submission's first task draw: its output starts at
+-            // arena word 0, so the host knows where to copy from.
++            // 048: EDEN_TASK_PROBE. 0.5.1: any task draw of the submission. The copy takes the
++            // arena's first 4 MiB and the read decodes from the draw's base (from its args); a
++            // draw past that range decodes no groups.
+             static u64 next_probe_frame{};
+             static bool want_shadow{true};
+             const auto& probe_regs{maxwell3d->regs};
+@@ -892,7 +893,7 @@
+             const bool view_target{probe_regs.rt[0].width == 1440 ||
+                                    (probe_regs.zeta_enable && probe_regs.zeta_size.width == 1440)};
+             const MeshEmulationSetup* const probe_setup{pipeline->MeshEmulation()};
+-            if (counted_arena.task_draws == 1 && !task_probe.copy_pending && !task_probe.read_pending &&
++            if (!task_probe.copy_pending && !task_probe.read_pending &&
+                 probe_frame >= next_probe_frame && probe_setup && probe_setup->block_words != 0 &&
+                 (want_shadow ? shadow_target
+                              : view_target && (groups >= 8 || probe_frame >= next_probe_frame + 120))) {

@@ -17,6 +17,7 @@
 #include <cstring>
 #include <time.h>
 #include "hud.h"
+#include "perf_monitor.h"
 #include "loading_art.h"
 #include "network/network.h"
 #include "loading_scene_glsl.h"
@@ -606,6 +607,10 @@ void ToggleHud() {
 HudSnapshot GetVulkanHud() {
     return vulkan_loading || hud_enabled.load(std::memory_order_relaxed) ? vulkan_hud : HudSnapshot{};
 }
+std::array<HudSnapshot, Hud::kGraphCount> GetVulkanHudGraphs() {
+    if (vulkan_loading || !hud_enabled.load(std::memory_order_relaxed)) return {};
+    return MakeHudGraphs(vulkan_hud);
+}
 // idle: the GPU thread has no game commands waiting (hud.h, LoadingPace).
 bool LoadingTick(VideoCore::RendererBase& renderer, bool idle) {
 #ifdef EDEN_PS5_VULKAN
@@ -661,10 +666,10 @@ GraphicsWindow::GraphicsWindow(bool use_vulkan) : vulkan(use_vulkan) {
         // that is refused leaves the one the launcher opened with.
         if (display != EGL_NO_DISPLAY &&
             !eglSetDisplayModePS5(display, Display::output_width.load(), Display::output_height.load()))
-            std::fprintf(stderr, "[ProsperoEden] OpenGL display: the output size was not set (0x%x)\n",
+            std::fprintf(stderr, "[DirkuLator] OpenGL display: the output size was not set (0x%x)\n",
                          static_cast<unsigned>(eglGetError()));
         if (display != EGL_NO_DISPLAY && !eglSetDisplayRefreshPS5(display, Display::requested_hz.load()))
-            std::fprintf(stderr, "[ProsperoEden] OpenGL display: the refresh rate was not set (0x%x)\n",
+            std::fprintf(stderr, "[DirkuLator] OpenGL display: the refresh rate was not set (0x%x)\n",
                          static_cast<unsigned>(eglGetError()));
 #endif
         Check(display != EGL_NO_DISPLAY && eglInitialize(display, nullptr, nullptr), "eglInitialize");
@@ -745,6 +750,7 @@ void GraphicsWindow::OnFrameDisplayed() {
         vulkan_loading = false;
 #ifdef EDEN_PS5_VULKAN
         vulkan_hud_clock.Present(now);
+        PerfMonitor::Frame(now);  // DirkuLator 0.5.18: frame times for perf-monitor.csv
         if (system && now - vulkan_hud_stats_time >= 1.0) {
             vulkan_hud_speed = system->GetAndResetPerfStats().emulation_speed * 100.0;
             vulkan_hud_stats_time = now;

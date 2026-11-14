@@ -1,4 +1,4 @@
-// ProsperoEden - Launcher multiplayer: the public room directory, a private room, the room joined.
+// DirkuLator - Launcher multiplayer: the public room directory, a private room, the room joined.
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "pe/ui/launcher.hpp"
 #include <algorithm>

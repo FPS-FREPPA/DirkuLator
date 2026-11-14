@@ -33,7 +33,7 @@ dev)
     exit 2
     ;;
 esac
-echo "== Eden for the PS5 ($mode, $(git rev-parse --short HEAD 2>/dev/null || echo source)$(git diff --quiet -- headless tools src 2>/dev/null || echo +dirty))"
+echo "== DirkuLator for the PS5 ($mode, $(git rev-parse --short HEAD 2>/dev/null || echo source)$(git diff --quiet -- headless tools src 2>/dev/null || echo +dirty))"
 bash tools/check-elevation-client.sh
 python3 -B tools/build-lapy-helper.py
 bash tools/build-headless-native.sh --graphics

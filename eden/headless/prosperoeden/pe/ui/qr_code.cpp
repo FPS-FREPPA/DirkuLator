@@ -1,4 +1,4 @@
-// ProsperoEden - Launcher: a QR code of a text; see qr_code.hpp. Made by Project Nayuki's QR Code
+// DirkuLator - Launcher: a QR code of a text; see qr_code.hpp. Made by Project Nayuki's QR Code
 // generator library (third_party/qrcodegen, MIT), compiled here.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later

@@ -636,15 +636,15 @@ pe::ui::Home EdenServices::home() {
     });
     if (!Eden::FilesystemAccess()) {
         // No data is kept anywhere else (storage_paths.h): say so, and start nothing.
-        home.status = fill(tr("ProsperoEden could not get access to the console's storage, so it cannot read your settings, saves and games. Nothing was changed. Close ProsperoEden and open it again. (Code {0})"),
+        home.status = fill(tr("DirkuLator could not get access to the console's storage, so it cannot read your settings, saves and games. Nothing was changed. Close DirkuLator and open it again. (Code {0})"),
                            {std::to_string(Eden::FilesystemAccessStatus())});
     } else if (!home.setup_ready && keys_needed) {
         home.status = fill(tr("Setup required: {0} Open Settings, Game files to choose the folder that holds your "
-                              "keys, firmware and roms folders (or add the files to {1}), then reopen ProsperoEden."),
+                              "keys, firmware and roms folders (or add the files to {1}), then reopen DirkuLator."),
                            {SetupMessage(setup_), Eden::AssetsDir()});
     } else if (launch_error_.starts_with(Eden::Crash::kNotice)) {
         // The previous run ended with a crash report (headless/crash_report.h).
-        home.status = fill(tr("ProsperoEden stopped because of an error. A report was saved to {0}."),
+        home.status = fill(tr("DirkuLator stopped because of an error. A report was saved to {0}."),
                            {launch_error_.substr(Eden::Crash::kNotice.size())});
         home.launch_failed = true;
     } else if (!launch_error_.empty()) {
@@ -733,10 +733,13 @@ void EdenServices::vibration_pulse(int percent) {
 }
 
 std::string EdenServices::version() {
-    // "01.000.040" reads as v1.000.040.
-    const char* text = Eden::kAppVersion;
-    while (text[0] == '0' && text[1] != '.' && text[1] != '\0') ++text;
-    return std::string("v") + text;
+    // DirkuLator versions: "00.001.000" reads as v0.1, "00.002.003" as v0.2.3 (each field without leading
+    // zeros, a zero last field left out).
+    unsigned major{}, minor{}, patch{};
+    if (std::sscanf(Eden::kAppVersion, "%u.%u.%u", &major, &minor, &patch) != 3) return std::string("v") + Eden::kAppVersion;
+    std::string text = "v" + std::to_string(major) + "." + std::to_string(minor);
+    if (patch) text += "." + std::to_string(patch);
+    return text;
 }
 
 std::vector<pe::ui::Game> EdenServices::games() {

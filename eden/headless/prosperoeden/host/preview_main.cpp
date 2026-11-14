@@ -1,5 +1,5 @@
 #ifndef PE_RUNTIME_PREVIEW
-// ProsperoEden - Launcher preview on a PC: draws the real screens to PNG files.
+// DirkuLator - Launcher preview on a PC: draws the real screens to PNG files.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
@@ -1158,7 +1158,7 @@ void tour(Stage &s)
 }
 
 // PE_TOUR=update: the app opens with a newer release listed; the offer, Update now, the download
-// and unpacking, and ProsperoEden closing for the update.
+// and unpacking, and DirkuLator closing for the update.
 void update_tour(Stage &s)
 {
     s.services.connected_controllers = 0b0001;

@@ -1,0 +1,32 @@
+Build 037 (from 033-036: the pool runs out entering Kokiri Forest with the guest's memory full
+slots; the user asked for the emulator's graphics memory as small as possible, the game to have it):
+- The upload stream buffer's size comes from EDEN_NX2_STREAM_BUFFER_MIB (8..256; headless/main.cpp:
+  32 on the console, stream-buffer-mib.txt; 128 before).
+- (headless/main.cpp) VMA blocks 8 MiB by default on the console (16 before; vma-block-mib.txt).
+- (headless/heap_arenas.inc) heap census: EDEN_HEAP_CENSUS / EDEN_HEAP_SITE on stderr every 30 s
+  and when the heap takes a piece; EDEN_NX2_HEAP_CENSUS_OFF disables it.
+
+diff --git a/src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp b/src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp
+--- a/src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp
++++ b/src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp
+@@ -4,6 +4,7 @@
+ // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
++#include <cstdlib>
+ #include <algorithm>
+ #include <utility>
+ #include <vector>
+@@ -40,6 +41,12 @@
+ #endif
+ 
+ size_t GetStreamBufferSize(const Device& device) {
++    if (const char* value = std::getenv("EDEN_NX2_STREAM_BUFFER_MIB")) {
++        const unsigned long long mib = std::strtoull(value, nullptr, 10);
++        if (mib >= 8 && mib <= 256) {
++            return static_cast<size_t>(mib) << 20;
++        }
++    }
+     if (!device.HasDebuggingToolAttached()) {
+         return MAX_STREAM_BUFFER_SIZE;
+     }

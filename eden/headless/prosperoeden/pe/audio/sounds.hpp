@@ -1,4 +1,4 @@
-// ProsperoEden - Launcher sound cues and the loaded sound bank.
+// DirkuLator - Launcher sound cues and the loaded sound bank.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

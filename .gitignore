@@ -38,3 +38,10 @@ milestones/ns2/rejected-qmd-package/
 *.pem
 *.p12
 *.pfx
+
+# Private game/system input and local diagnostics
+*.nup
+*.pup
+*.pcap
+*.pcapng
+*.ffpfsc

@@ -28,10 +28,19 @@
 #include <cstdint>
 
 namespace Eden::StagingBuffers {
-inline constexpr std::uint64_t kExactAbove = std::uint64_t{16} << 20;
-inline constexpr std::uint64_t kStep = std::uint64_t{16} << 20;
+// DirkuLator 0.5.3: 4 MiB, was 16 MiB. 0.5.2 was refused a 12 MiB + 48 upload made as 16 MiB
+// (12 MiB largest free block); exact it is 13 MiB. Smaller uploads keep their power of two (reuse).
+inline constexpr std::uint64_t kExactAbove = std::uint64_t{4} << 20;
+// DirkuLator 0.5.2: 1 MiB, was 16 MiB. OoT's 50331696-byte upload (48 MiB + 48) was made as
+// 64 MiB and refused with a 62 MiB largest free block (0.3, 0.5, 0.5.1 VK_ERROR_OUT_OF_DEVICE_MEMORY).
+inline constexpr std::uint64_t kStep = std::uint64_t{1} << 20;
 inline constexpr std::uint64_t kIdleKept = std::uint64_t{256} << 20;
 inline constexpr std::uint64_t kLowLargestFree = std::uint64_t{512} << 20;
+// DirkuLator 0.5.16: 64 MiB stay when the largest free block is low (was none). OoT ran with it under
+// 512 MiB for most of a session, so every idle buffer went each frame and was made again the next
+// (4-8 MiB allocate/free pairs ~20 ms apart, 4-5 fps). Uploads come in pieces of 16 MiB or less now,
+// and a refused buffer still lets go of every idle one (MakeOrReclaim).
+inline constexpr std::uint64_t kIdleKeptLow = std::uint64_t{64} << 20;
 
 // Whether a transfer of `size` bytes gets a buffer of its own size. `mapped`: the CPU writes or
 // reads it (Eden's Upload and Download kinds); the buffers for the GPU alone keep their power of two.
@@ -97,10 +106,10 @@ auto MakeOrReclaim(Make&& make, Refused&& refused, Release&& release, Reclaim&& 
     }
 }
 
-// How many bytes of idle kept buffers may stay: kIdleKept, or none when the pool's largest free
-// block (`largest_free`, -1 when unknown) is under kLowLargestFree.
+// How many bytes of idle kept buffers may stay: kIdleKept, or kIdleKeptLow when the pool's largest
+// free block (`largest_free`, -1 when unknown) is under kLowLargestFree.
 constexpr std::uint64_t IdleAllowance(std::size_t largest_free) noexcept {
-    return largest_free != static_cast<std::size_t>(-1) && largest_free < kLowLargestFree ? 0 : kIdleKept;
+    return largest_free != static_cast<std::size_t>(-1) && largest_free < kLowLargestFree ? kIdleKeptLow : kIdleKept;
 }
 
 // Lets go of idle kept buffers (`idle` picks them), largest power of two first, until at most

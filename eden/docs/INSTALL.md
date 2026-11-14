@@ -1,6 +1,6 @@
 # Game files, app data and updates
 
-Where ProsperoEden looks for your keys, firmware and games, where it keeps its own data, and how it is updated. The install steps themselves are in the [README](../README.md#install).
+Where DirkuLator looks for your keys, firmware and games, where it keeps its own data, and how it is updated. The install steps themselves are in the [README](../README.md#install).
 
 ## Game files folder
 
@@ -34,7 +34,7 @@ Only these subfolders matter; the folder itself can have any name and location.
 └── .remote-downloads/                  # downloads that are not finished yet (see Download sources)
 ```
 
-Each game sits in a folder of its own in `roms/`, with everything that belongs to it: its update and DLC files, its mods, its cheats and its post-processing presets. ProsperoEden tells the game from its update and DLC by what each file holds, not by its name, so the files can have any names. Folders inside a game folder are not searched for games, and folders whose names start with a dot are skipped. **Delete from console** also deletes the update and DLC files in the game's folder, and the folder once it is empty.
+Each game sits in a folder of its own in `roms/`, with everything that belongs to it: its update and DLC files, its mods, its cheats and its post-processing presets. DirkuLator tells the game from its update and DLC by what each file holds, not by its name, so the files can have any names. Folders inside a game folder are not searched for games, and folders whose names start with a dot are skipped. **Delete from console** also deletes the update and DLC files in the game's folder, and the folder once it is empty.
 
 A game kept as a folder dump (`<Game>/exefs/main` with `<Game>/romfs/`, as made from a NUP) holds no cover of its own. Put a picture named `cover.jpg`, `cover.png`, `icon.jpg` or `icon.png` in its folder and the Library shows it; a game also found on a download source takes that source's cover.
 
@@ -42,7 +42,7 @@ The folder browser shows how many keys, firmware files, and games each folder ho
 
 ## App data
 
-ProsperoEden keeps its own data in `/data/eden-nx2`, separately from the game files folder:
+DirkuLator keeps its own data in `/data/eden-nx2`, separately from the game files folder:
 
 ```text
 /data/eden-nx2/
@@ -64,37 +64,37 @@ ProsperoEden keeps its own data in `/data/eden-nx2`, separately from the game fi
 
 The app itself stays in `/data/homebrew/PPSA99862`; see [Updating](#updating).
 
-ProsperoEden does not include keys, firmware, games, or other copyrighted console data. Dump these files from hardware and software you own. Do not download or redistribute them.
+DirkuLator does not include keys, firmware, games, or other copyrighted console data. Dump these files from hardware and software you own. Do not download or redistribute them.
 
-This is the only place it keeps them. If ProsperoEden cannot get access to the console's storage when it starts, the home screen says so and no game can be started; your data is untouched, and closing ProsperoEden and opening it again is the first thing to try. Earlier versions kept a second set of settings and saves in the app's own sandbox in that case, which made saves and settings seem to disappear on consoles where access came and went.
+This is the only place it keeps them. If DirkuLator cannot get access to the console's storage when it starts, the home screen says so and no game can be started; your data is untouched, and closing DirkuLator and opening it again is the first thing to try. Earlier versions kept a second set of settings and saves in the app's own sandbox in that case, which made saves and settings seem to disappear on consoles where access came and went.
 
 Keys, firmware and games that an early version kept inside the app's folder (`/data/homebrew/PPSA99862/assets`) are moved to `/data/eden-nx2` the first time this version starts, so that replacing the app cannot remove them.
 
 ## Updating
 
-Close ProsperoEden first. Your settings, saves, covers and logs are in `/data/eden-nx2`, outside the app, so an update keeps them. Afterwards the About screen shows the version that is running.
+Close DirkuLator first. Your settings, saves, covers and logs are in `/data/eden-nx2`, outside the app, so an update keeps them. Afterwards the About screen shows the version that is running.
 
-Once each time it opens, ProsperoEden asks [homebrew.page](https://homebrew.page/ps5) which release of it is listed there. The request carries the app's title ID and nothing else. If the listed release is newer than the one running, a dialog offers it, with its version and download size:
+Once each time it opens, DirkuLator asks [homebrew.page](https://homebrew.page/ps5) which release of it is listed there. The request carries the app's title ID and nothing else. If the listed release is newer than the one running, a dialog offers it, with its version and download size:
 
-- **Update now** downloads the release ZIP from its GitHub release, checks it against the SHA-256 in the catalog's signed list, and unpacks it beside the app. A ring shows how far it is and the time left; Circle cancels, and nothing has changed until the end. Then ProsperoEden closes, the update helper (`self-updater.elf`, sent to the console's payload loader on port 9021) replaces the app's files, and the console shows a notification. Open ProsperoEden again to use the new version. The version it replaced is kept; see [Going back to the previous version](#going-back-to-the-previous-version).
+- **Update now** downloads the release ZIP from its GitHub release, checks it against the SHA-256 in the catalog's signed list, and unpacks it beside the app. A ring shows how far it is and the time left; Circle cancels, and nothing has changed until the end. Then DirkuLator closes, the update helper (`self-updater.elf`, sent to the console's payload loader on port 9021) replaces the app's files, and the console shows a notification. Open DirkuLator again to use the new version. The version it replaced is kept; see [Going back to the previous version](#going-back-to-the-previous-version).
 - **What's new** (when the release has notes) shows what changes in it before you decide: the release notes as homebrew.page lists them. Up/Down scroll, L1/R1 jump a page, Cross updates and Circle goes back to the offer. Triangle opens them from the offer too.
-- **Skip** keeps the version you have. The dialog shows again the next time ProsperoEden opens, not when you come back from a game.
+- **Skip** keeps the version you have. The dialog shows again the next time DirkuLator opens, not when you come back from a game.
 
-To stay on a version without being asked at every start, turn off **Settings > Diagnostics > Update notices** (`"system": { "update_notices": false }` in the settings file). ProsperoEden still asks homebrew.page, but neither the dialog nor the notification below shows; the About screen names the newer version beside the one running. It applies the next time ProsperoEden opens.
+To stay on a version without being asked at every start, turn off **Settings > Diagnostics > Update notices** (`"system": { "update_notices": false }` in the settings file). DirkuLator still asks homebrew.page, but neither the dialog nor the notification below shows; the About screen names the newer version beside the one running. It applies the next time DirkuLator opens.
 
-If the download or the unpacking fails, the dialog says why and offers **Try again**; the app stays as it was. Without a network, or without an answer, nothing is shown. When ProsperoEden cannot install the release itself (no payload loader, or an install it cannot find), the menu says **Update available** at the top right for ten seconds instead, and the steps below still work:
+If the download or the unpacking fails, the dialog says why and offers **Try again**; the app stays as it was. Without a network, or without an answer, nothing is shown. When DirkuLator cannot install the release itself (no payload loader, or an install it cannot find), the menu says **Update available** at the top right for ten seconds instead, and the steps below still work:
 
-- **Folder install.** Copy the `PPSA99862` folder from the new release ZIP over `/data/homebrew/PPSA99862`, replacing the files it has, then start ProsperoEden. Files you put there yourself, such as `language.txt`, stay.
+- **Folder install.** Copy the `PPSA99862` folder from the new release ZIP over `/data/homebrew/PPSA99862`, replacing the files it has, then start DirkuLator. Files you put there yourself, such as `language.txt`, stay.
 
 ## Going back to the previous version
 
-When ProsperoEden updates itself, the files of the version it replaces are kept in `/data/eden-nx2/previous-version/PPSA99862-backup`, until the next update replaces them in turn. If a new version misbehaves, you can put the previous one back:
+When DirkuLator updates itself, the files of the version it replaces are kept in `/data/eden-nx2/previous-version/PPSA99862-backup`, until the next update replaces them in turn. If a new version misbehaves, you can put the previous one back:
 
-1. Close ProsperoEden.
+1. Close DirkuLator.
 2. Copy everything inside `/data/eden-nx2/previous-version/PPSA99862-backup` over the app's folder (`/data/homebrew/PPSA99862`), replacing the files it has, for example over FTP.
-3. Start ProsperoEden. The About screen shows the version that is running.
+3. Start DirkuLator. The About screen shows the version that is running.
 
-The update will be offered again the next time ProsperoEden opens; choose **Skip** to stay on the version you put back. Settings, saves and game files are not part of this: they stay as they are. An update done by hand, by copying a release over the app's folder, keeps no previous version.
+The update will be offered again the next time DirkuLator opens; choose **Skip** to stay on the version you put back. Settings, saves and game files are not part of this: they stay as they are. An update done by hand, by copying a release over the app's folder, keeps no previous version.
 
 ## Upgrading from an earlier alpha
 

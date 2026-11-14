@@ -1,4 +1,4 @@
-// ProsperoEden - The launcher's text in the player's language.
+// DirkuLator - The launcher's text in the player's language.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

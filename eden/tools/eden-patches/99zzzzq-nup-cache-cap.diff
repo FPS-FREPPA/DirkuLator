@@ -1,0 +1,58 @@
+Build 034 (from the 033 run: crash at 383 s, pool largest free 2 MiB, app heap 2176 -> 2432 MiB at the end):
+- The NUP container's cache of decompressed zstd members is capped by EDEN_NX2_NUP_CACHE_MIB
+  (headless/main.cpp: 64 MiB on the console, nup-cache-mib.txt overrides; it was 512 MiB). It is app
+  heap, whose pieces are never given back, in the 12 GiB pool the guest and graphics share. Members
+  over half the cap are decompressed to a temporary file, as the largest ones already were.
+- EDEN_NUP_CACHE log lines: the cap at start, then the cache's fill every 64 MiB.
+
+diff --git a/src/core/file_sys/nup_container.cpp b/src/core/file_sys/nup_container.cpp
+--- a/src/core/file_sys/nup_container.cpp
++++ b/src/core/file_sys/nup_container.cpp
+@@ -5,6 +5,7 @@
+ 
+ #include <algorithm>
+ #include <cstddef>
++#include <cstdlib>
+ #include <cstring>
+ #include <list>
+ #include <map>
+@@ -212,6 +213,11 @@
+         {
+             std::scoped_lock lock{cache->mutex};
+             cache->Insert(cache_index, scratch);
++            if (const std::size_t step = cache->bytes >> 26; step != cache->reported_step) {
++                cache->reported_step = step;
++                LOG_INFO(Loader, "EDEN_NUP_CACHE held={} MiB of {} MiB, {} members", cache->bytes >> 20,
++                         cache->cap >> 20, cache->lru.size());
++            }
+             if (const auto* cached = cache->Find(cache_index)) {
+                 std::memcpy(data, cached->data() + offset, length);
+                 return length;
+@@ -368,6 +374,16 @@
+     cache->spill_dir = spill_dir_.empty()
+                            ? Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "nup"
+                            : std::move(spill_dir_);
++    // EDEN_NX2_NUP_CACHE_MIB (8..4096): the cache's cap, set before Parse() decides which members
++    // spill to a file (over half the cap).
++    if (const char* value = std::getenv("EDEN_NX2_NUP_CACHE_MIB")) {
++        const unsigned long long mib = std::strtoull(value, nullptr, 10);
++        if (mib >= 8 && mib <= 4096) {
++            cache->cap = static_cast<std::size_t>(mib) << 20;
++        }
++    }
++    LOG_INFO(Loader, "EDEN_NUP_CACHE cap={} MiB, members over {} MiB spill to {}", cache->cap >> 20,
++             cache->cap >> 21, cache->spill_dir.string());
+     if (file == nullptr) {
+         return;
+     }
+diff --git a/src/core/file_sys/nup_container.h b/src/core/file_sys/nup_container.h
+--- a/src/core/file_sys/nup_container.h
++++ b/src/core/file_sys/nup_container.h
+@@ -45,6 +45,7 @@
+     std::unordered_map<std::size_t, std::list<Entry>::iterator> index;
+     std::size_t bytes{};
+     std::size_t cap{DefaultCap};
++    std::size_t reported_step{}; ///< 64 MiB steps of `bytes` already logged (EDEN_NUP_CACHE)
+     std::filesystem::path spill_dir;
+     std::unordered_map<std::size_t, std::shared_ptr<NupSpillFile>> spills;
+ 

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Where ProsperoEden keeps things. With filesystem access (elevation/elevation.hpp, requested
+// Where DirkuLator keeps things. With filesystem access (elevation/elevation.hpp, requested
 // first thing in main) the app uses real console paths:
 //   app folder     the install location, normally /data/homebrew/PPSA99862
-//   data           /data/eden-nx2: config/ (prosperoeden.json), logs/, covers/, user/,
+//   data           /data/eden-nx2: config/ (dirkulator.json), logs/, covers/, user/,
 //                  wallpapers/ (docs/WALLPAPERS.md)
 // Without it (no resident service or local elfldr, or the request failed) the app has no data:
 // it reads the app folder as /app0, keeps only its logs in /download0, and the launcher says

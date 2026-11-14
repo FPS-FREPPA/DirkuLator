@@ -23,7 +23,8 @@ for statement in (
     'Settings::values.cpu_accuracy = Settings::CpuAccuracy::Unsafe;',
     'Settings::values.dma_accuracy.SetValue(speed.unsafe_dma ?\n'
     '                Settings::DmaAccuracy::Unsafe : Settings::DmaAccuracy::Default);',
-    'Eden::Performance::cpu_write_defer.store(speed.unsafe_dma, std::memory_order_relaxed);',
+    # DirkuLator 0.5.6: deferred CPU writes every session unless dev-settings cpu_write_defer=off.
+    'Eden::Performance::cpu_write_defer.store(defer_writes, std::memory_order_relaxed);',
     'Settings::values.use_reactive_flushing.SetValue(speed.reactive_flushing);',
     'Settings::values.skip_cpu_inner_invalidation.SetValue(speed.skip_invalidation);',
     'Common::SetGuestMemoryFine(speed.compact_memory || dev_cram_fine);',

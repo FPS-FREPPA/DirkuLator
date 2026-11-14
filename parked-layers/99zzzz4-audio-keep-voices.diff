@@ -1,0 +1,44 @@
+Keep audio renderer voices that go over the estimated time limit, and log when that happens. The
+limit (80% of 2,880,000) is the Switch 1 audio DSP's budget, and OoT reports missing audio with no
+error anywhere in the log. EDEN_AUDIO_VOICE_LIMIT lines record the estimate against the limit;
+/data/eden-nx2/audio-voice-drop.txt restores the drop.
+
+diff --git a/src/audio_core/renderer/system.cpp b/src/audio_core/renderer/system.cpp
+--- a/src/audio_core/renderer/system.cpp
++++ b/src/audio_core/renderer/system.cpp
+@@ -4,7 +4,9 @@
+ // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <atomic>
+ #include <chrono>
++#include <cstdlib>
+ #include <span>
+ 
+ #include "audio_core/adsp/apps/audio_renderer/audio_renderer.h"
+@@ -722,8 +724,24 @@
+         const auto estimated_time{start_estimated_time - end_estimated_time};
+ 
+         const auto time_limit{static_cast<u32>((std::max)(dsp_time_limit + estimated_time, 0.0f))};
++        // The limit above is the Switch 1 audio DSP's budget. Record every update that goes over
++        // it, and keep the voices unless EDEN_AUDIO_VOICE_DROP asks for the drop.
++        static const bool allow_drop = std::getenv("EDEN_AUDIO_VOICE_DROP") != nullptr;
++        static std::atomic<u64> updates{};
++        static std::atomic<u64> over_limit{};
++        const auto update_count = updates.fetch_add(1) + 1;
++        const bool over = static_cast<u32>(start_estimated_time) > time_limit;
++        const auto over_count = over_limit.fetch_add(over ? 1 : 0) + (over ? 1 : 0);
++        if (update_count == 1 || (over && over_count <= 5) || update_count % 2000 == 0) {
++            LOG_INFO(Service_Audio,
++                     "EDEN_AUDIO_VOICE_LIMIT updates={} over={} estimated={} limit={} param={} "
++                     "allow_drop={}",
++                     update_count, over_count, static_cast<u32>(start_estimated_time), time_limit,
++                     drop_voice_param, allow_drop);
++        }
+         num_voices_dropped =
+-            DropVoices(command_buffer, static_cast<u32>(start_estimated_time), time_limit);
++            allow_drop ? DropVoices(command_buffer, static_cast<u32>(start_estimated_time), time_limit)
++                       : 0;
+     }
+ 
+     command_list_header->buffer_size = command_buffer.size;

@@ -21,7 +21,7 @@ Use a private room server on a PC/Linux host for initial tests. The PS5 build is
 client; it does not host a room or browse public rooms. Obtain the host address, UDP port
 and optional room password from the room operator. The usual UDP port is **24872**.
 
-1. In ProsperoEden, open **Multiplayer** (a section of the menu: R1 twice from the home screen) before launching a game.
+1. In DirkuLator, open **Multiplayer** (a section of the menu: R1 twice from the home screen) before launching a game.
 2. Select **Room address** and enter a numeric IPv4 address or hostname. Enter the port
    separately. IPv6 literals are not supported by this connection form.
    The current PS5 candidate failed hostname resolution in the public-cloud test; use
@@ -57,7 +57,7 @@ to the launcher; seamless mid-game reconnection is not supported.
 Enable **Settings > Diagnostics > Detailed logging**, then reproduce the room join or
 in-game issue. For multiplayer, the setting takes effect immediately, including before launching
 a game. Collect `/data/eden-nx2/logs/stderr.log`; detailed multiplayer lines have the
-`[ProsperoEden] multiplayer debug:` prefix. Include
+`[DirkuLator] multiplayer debug:` prefix. Include
 `/data/eden-nx2/user/log/eden_log.txt` for an in-game issue as well. Copy the logs before
 restarting the app, which starts a new `stderr.log`.
 
@@ -92,9 +92,9 @@ address is not automatically reachable from the PS5 or other tailnet devices.
 
 Being on the same tailnet is not sufficient by itself. The inspected PS5 payloads run
 Tailscale in their own process; they do not add a system-wide Tailscale network interface
-that ProsperoEden can dial directly. The client needs a local UDP forward to the room.
+that DirkuLator can dial directly. The client needs a local UDP forward to the room.
 
-| Payload revision inspected | Source-level capability | ProsperoEden validation |
+| Payload revision inspected | Source-level capability | DirkuLator validation |
 |---|---|---|
 | [holdmysocks `e4986b4`](https://github.com/holdmysocks/ps5-tailscale/tree/e4986b4d52af6a63f9be14d9de616d267c566de1) | Configurable local UDP forward to a tailnet host | Candidate; not yet tested on PS5 |
 | [atreus04-GG `d99261c`](https://github.com/atreus04-GG/ps5tailscale/tree/d99261c21b678d9637a92c88168e1f4a72563040) | Fixed inbound Remote Play proxy; no configured local outbound UDP path | Unsupported for this room topology at this revision |
@@ -116,13 +116,13 @@ the equivalent fragment to merge into its existing configuration, preserving oth
 ```
 
 Replace `eden-room-pc` with the actual room host's tailnet name or address. Follow the
-selected payload release's instructions for applying configuration. In ProsperoEden,
+selected payload release's instructions for applying configuration. In DirkuLator,
 connect to **127.0.0.1**, port **24872**. If that local port is occupied, use another free
 local port in both places while keeping the target port equal to the room server's port.
 
 Each PS5 needs its own local forward to the same room. A desktop with ordinary Tailscale
 routing connects directly to the room host's tailnet address. Use the room password in
-ProsperoEden; Tailscale registration and keys belong in the payload's own setup.
+DirkuLator; Tailscale registration and keys belong in the payload's own setup.
 
 Do not put this outbound room port in the payload's inbound `udpPorts`, or use its HTTP
 proxy for ENet traffic. Those are different paths. Room-encapsulated local-wireless discovery

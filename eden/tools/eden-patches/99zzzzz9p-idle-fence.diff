@@ -1,0 +1,192 @@
+DirkuLator 0.5.20: submit queued operations/query work before the GPU thread idles.
+Idle fences explicitly wait for host-GPU completion, including when caches have no downloads.
+No rendering work or tensor shaders are skipped. Existing non-idle fence behavior is unchanged.
+EDEN_NX2_IDLE_FENCE_OFF restores the pre-layer idle behavior.
+
+diff --git a/src/video_core/fence_manager.h b/src/video_core/fence_manager.h
+--- a/src/video_core/fence_manager.h
++++ b/src/video_core/fence_manager.h
+@@ -65,9 +65,20 @@
+         buffer_cache.AccumulateFlushes();
+     }
+ 
+-    void SignalReference() {
++    void SignalReference(bool force_gpu_wait = false) {
+         std::function<void()> do_nothing([] {});
+-        SignalFence(std::move(do_nothing));
++        SignalFence(std::move(do_nothing), force_gpu_wait);
++    }
++
++    /// 0.5.20: operations queued for the next fence (SyncOperation) that no fence carries yet.
++    size_t UncommittedOperations() {
++        std::scoped_lock lock{uncommitted_guard};
++        return uncommitted_operations.size();
++    }
++
++    /// 0.5.20: whether the query cache holds work that waits for the next fence (GPU thread only).
++    bool QueryFenceWork() {
++        return query_cache.HasPendingFenceWork();
+     }
+ 
+     void SyncOperation(std::function<void()>&& func) {
+@@ -78,21 +89,21 @@
+         uncommitted_operations.emplace_back(std::move(func));
+     }
+ 
+-    void SignalFence(std::function<void()>&& func) {
++    void SignalFence(std::function<void()>&& func, bool force_gpu_wait = false) {
+         Nx2Profile::Scope profile_scope{Nx2Profile::Zone::Fence};
+         const bool delay_fence = Settings::IsGPUFenceBehaviorDefault() ? Settings::IsGPULevelHigh() : Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
+         if constexpr (!can_async_check) {
+             TryReleasePendingFences<false>();
+         }
+         auto [should_flush, committed_flushes] = CommitCacheFlushes();
+-        if (!delay_fence && committed_flushes == 0 && SkipEmptyFence()) {
++        if (!force_gpu_wait && !delay_fence && committed_flushes == 0 && SkipEmptyFence()) {
+             Nx2Profile::Scope skipped_scope{Nx2Profile::Zone::FenceSkipped};
+             func();
+             rasterizer.InvalidateGPUCache();
+             return;
+         }
+         skipped_fences = 0;
+-        should_flush |= query_cache.HasUncommittedFlushes();
++        should_flush |= force_gpu_wait || query_cache.HasUncommittedFlushes();
+         query_cache.CommitAsyncFlushes();
+         TFence new_fence = CreateFence(!should_flush);
+         if constexpr (can_async_check) {
+diff --git a/src/video_core/gpu_thread.cpp b/src/video_core/gpu_thread.cpp
+--- a/src/video_core/gpu_thread.cpp
++++ b/src/video_core/gpu_thread.cpp
+@@ -79,6 +79,19 @@
+         // GPU (EDEN_GPU_STALL_RECOVERED). This recovers; it does not explain.
+         // EDEN_NX2_STALL_RECOVERY_OFF: log only.
+         static const bool stall_recovery = std::getenv("EDEN_NX2_STALL_RECOVERY_OFF") == nullptr;
++        // 0.5.20: before it waits, a fence for operations queued for the next one (see
++        // RasterizerInterface::SignalIdleFence). EDEN_NX2_IDLE_FENCE_OFF: as before.
++        static const bool idle_fence = std::getenv("EDEN_NX2_IDLE_FENCE_OFF") == nullptr;
++        static std::atomic<unsigned long long> idle_fences{}, idle_fence_operations{};
++        const auto signal_idle_fence = [](VideoCore::RasterizerInterface* rasterizer_ptr) {
++            if (!idle_fence) {
++                return;
++            }
++            if (const size_t carried = rasterizer_ptr->SignalIdleFence()) {
++                idle_fences.fetch_add(1, std::memory_order_relaxed);
++                idle_fence_operations.fetch_add(carried, std::memory_order_relaxed);
++            }
++        };
+         const auto steady_ms = [] {
+             return std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+@@ -103,7 +116,10 @@
+             submitted_since_progress = true;
+             ++idle_submits;
+             auto* const rasterizer_ptr = renderer.ReadRasterizer();
+-            on_back([rasterizer_ptr] { rasterizer_ptr->SubmitRecordedWork(); });
++            on_back([rasterizer_ptr, signal_idle_fence] {
++                signal_idle_fence(rasterizer_ptr);
++                rasterizer_ptr->SubmitRecordedWork();
++            });
+         };
+         unsigned long long idle_waits = 0;
+         const auto handle_stall = [&] {
+@@ -113,18 +129,36 @@
+             // 033: nothing owed (the guest is busy elsewhere): not a GPU stall.
+             if (!pending && syncpoints.GetGuestSyncpointValue(1) == syncpoints.GetHostSyncpointValue(1)) {
+                 ++idle_waits;
++                // 0.5.20: the guest may wait for an operation queued for a fence while nothing
++                // is owed on the GPU side: carry it now (counted in idle_fences).
++                auto* const rasterizer_ptr = renderer.ReadRasterizer();
++                on_back([rasterizer_ptr, signal_idle_fence] {
++                    signal_idle_fence(rasterizer_ptr);
++                    rasterizer_ptr->SubmitRecordedWork();
++                });
+                 progress_ms.store(steady_ms(), std::memory_order_relaxed);
+                 return;
+             }
+             ++stalls;
+             const bool report = stalls <= 32 || stalls % 64 == 0;
+             if (report) {
++                // Fence work is read here only without the split (the back thread owns it).
++                long long fence_ops = -1;
++                int query_fence = -1;
++                if (!split.Active()) {
++                    auto* const rasterizer_ptr = renderer.ReadRasterizer();
++                    fence_ops = static_cast<long long>(rasterizer_ptr->PendingFenceOperations());
++                    query_fence = rasterizer_ptr->PendingQueryFenceWork() ? 1 : 0;
++                }
+                 std::fprintf(stderr,
+                              "EDEN_GPU_STALL n=%llu waited_ms=%lld channels_pending=%d idle_submits=%llu "
+-                             "idle_waits=%llu sp1_guest=%u sp1_host=%u recovery=%d\n",
++                             "idle_waits=%llu sp1_guest=%u sp1_host=%u recovery=%d fence_ops=%lld "
++                             "query_fence=%d idle_fences=%llu idle_fence_ops=%llu idle_fence_on=%d\n",
+                              stalls, waited_ms, pending ? 1 : 0, idle_submits, idle_waits,
+                              syncpoints.GetGuestSyncpointValue(1), syncpoints.GetHostSyncpointValue(1),
+-                             stall_recovery ? 1 : 0);
++                             stall_recovery ? 1 : 0, fence_ops, query_fence,
++                             idle_fences.load(std::memory_order_relaxed),
++                             idle_fence_operations.load(std::memory_order_relaxed), idle_fence ? 1 : 0);
+                 LOG_WARNING(HW_GPU, "EDEN_GPU_STALL n={} waited_ms={} channels_pending={} sp1_guest={} sp1_host={}",
+                             stalls, waited_ms, pending, syncpoints.GetGuestSyncpointValue(1),
+                             syncpoints.GetHostSyncpointValue(1));
+diff --git a/src/video_core/rasterizer_interface.h b/src/video_core/rasterizer_interface.h
+--- a/src/video_core/rasterizer_interface.h
++++ b/src/video_core/rasterizer_interface.h
+@@ -155,6 +155,15 @@
+     /// The GPU thread calls it before it waits (032, layer 99zzzzo).
+     virtual void SubmitRecordedWork() {}
+ 
++    /// 0.5.20: before the GPU thread waits, signals a fence for operations queued for the next
++    /// one (SyncOperation, query reports), which otherwise wait for a fence nobody makes while a
++    /// channel or the guest waits for them. Returns the operations it carried (1 for query work).
++    virtual size_t SignalIdleFence() { return 0; }
++
++    /// 0.5.20 (EDEN_GPU_STALL): operations waiting for a fence; whether the query cache has fence work.
++    virtual size_t PendingFenceOperations() { return 0; }
++    virtual bool PendingQueryFenceWork() { return false; }
++
+     /// Notify rasterizer that a frame is about to finish
+     virtual void TickFrame() = 0;
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -2630,6 +2630,26 @@
+     scheduler.Flush();
+ }
+ 
++size_t RasterizerVulkan::SignalIdleFence() {
++    const size_t operations = fence_manager.UncommittedOperations();
++    const bool query_work = fence_manager.QueryFenceWork();
++    if (operations == 0 && !query_work) {
++        return 0;
++    }
++    // These operations must not retire through a stub fence: prior recorded GPU work
++    // must complete before query results or guest semaphore writes become visible.
++    fence_manager.SignalReference(true);
++    return operations != 0 ? operations : 1;
++}
++
++size_t RasterizerVulkan::PendingFenceOperations() {
++    return fence_manager.UncommittedOperations();
++}
++
++bool RasterizerVulkan::PendingQueryFenceWork() {
++    return fence_manager.QueryFenceWork();
++}
++
+ void RasterizerVulkan::TickFrame() {
+     draw_counter = 0;
+     VideoCommon::NativeDrawTrace::frame.fetch_add(1, std::memory_order_relaxed);
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -132,6 +132,9 @@
+     void TiledCacheBarrier() override;
+     void FlushCommands() override;
+     void SubmitRecordedWork() override;
++    size_t SignalIdleFence() override;
++    size_t PendingFenceOperations() override;
++    bool PendingQueryFenceWork() override;
+     void TickFrame() override;
+     bool AccelerateConditionalRendering() override;
+     bool HasDrawTransformFeedback() override;

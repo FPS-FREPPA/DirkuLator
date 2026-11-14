@@ -1,4 +1,4 @@
-// ProsperoEden - Launcher: a game's own settings by category (Library > Game settings > Video,
+// DirkuLator - Launcher: a game's own settings by category (Library > Game settings > Video,
 // Performance, Audio, Controls, System, Language) and the button mapping (Settings > Controls,
 // or a game's own).
 // Copyright (C) 2026 BlackBearReloaded

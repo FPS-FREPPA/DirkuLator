@@ -1,0 +1,129 @@
+Build 031 (from the 030 run, the user's request for no vertex explosions and CPU work, AnyPS5's rules):
+- Mesh draws with a task program are skipped by default and counted (EDEN_MESH_DRAW_DROPPED task);
+  /data/eden-nx2/task-draws-on.txt (EDEN_NX2_TASK_DRAWS) runs them again. Their emulation drew the
+  vertex explosions (gone whenever these draws were: 025 mesh-draws-off, 026b task programs rejected).
+  It also stops allocating the 64-128 MiB task output arenas. Known gap: what they drew is missing.
+- VMA device-memory blocks are 16 MiB on the PS5 (EDEN_NX2_VMA_BLOCK_MIB, vma-block-mib.txt; 64
+  before): 529-907 MiB sat free inside partly used 64 MiB blocks when the pool ran out (026-030).
+- EDEN_SUBMIT_DEPTH (stdout/heap.log every 5 s): how many submissions the GPU had not finished at
+  each submit, and the submit call's time. The Vulkan worker spent ~92% of its time in vkQueueSubmit
+  (~19.6 ms, ~2.4 per frame); depth tells CPU-bound (0) from GPU-bound (1+) before any optimization.
+
+diff --git a/src/video_core/renderer_vulkan/vk_master_semaphore.cpp b/src/video_core/renderer_vulkan/vk_master_semaphore.cpp
+--- a/src/video_core/renderer_vulkan/vk_master_semaphore.cpp
++++ b/src/video_core/renderer_vulkan/vk_master_semaphore.cpp
+@@ -6,6 +6,9 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <thread>
++#include <array>
++#include <chrono>
++#include <cstdio>
+ 
+ #include <ranges>
+ #include "common/settings.h"
+@@ -128,12 +131,48 @@
+ VkResult MasterSemaphore::SubmitQueue(vk::CommandBuffer& cmdbuf, vk::CommandBuffer& upload_cmdbuf,
+                                       VkSemaphore signal_semaphore, VkSemaphore wait_semaphore,
+                                       u64 host_tick) {
+-    if (semaphore) {
+-        return SubmitQueueTimeline(cmdbuf, upload_cmdbuf, signal_semaphore, wait_semaphore,
+-                                   host_tick);
+-    } else {
+-        return SubmitQueueFence(cmdbuf, upload_cmdbuf, signal_semaphore, wait_semaphore, host_tick);
++    // EDEN_SUBMIT_DEPTH (stdout, every 5 s): the submissions the GPU had not finished when each
++    // new one was made, and how long the submit call took. Mostly 0: the GPU waits for the CPU
++    // (CPU-bound). Mostly 1 or more: the GPU is behind (GPU-bound), and a long submit is the
++    // driver waiting for ring space rather than doing work.
++    Refresh();
++    const u64 known = gpu_tick.load(std::memory_order_acquire);
++    const u64 depth = host_tick > known + 1 ? host_tick - known - 1 : 0;
++    const auto started = std::chrono::steady_clock::now();
++    const VkResult result =
++        semaphore ? SubmitQueueTimeline(cmdbuf, upload_cmdbuf, signal_semaphore, wait_semaphore, host_tick)
++                  : SubmitQueueFence(cmdbuf, upload_cmdbuf, signal_semaphore, wait_semaphore, host_tick);
++    const u64 ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                        std::chrono::steady_clock::now() - started)
++                                        .count());
++    static u64 window_start_ns{}, submits{}, depth_sum{}, depth_max{}, ns_sum{}, ns_max{};
++    static std::array<u64, 4> depth_hist{};
++    const u64 now_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                            started.time_since_epoch())
++                                            .count());
++    if (window_start_ns == 0) {
++        window_start_ns = now_ns;
++    }
++    ++submits;
++    depth_sum += depth;
++    depth_max = (std::max)(depth_max, depth);
++    ++depth_hist[(std::min)(depth, u64{3})];
++    ns_sum += ns;
++    ns_max = (std::max)(ns_max, ns);
++    if (now_ns - window_start_ns >= 5'000'000'000ULL) {
++        std::printf("EDEN_SUBMIT_DEPTH submits=%llu depth_avg=%.2f depth_max=%llu depth0=%llu depth1=%llu "
++                    "depth2=%llu depth3plus=%llu submit_ms_avg=%.2f submit_ms_max=%.2f seconds=%.2f\n",
++                    static_cast<unsigned long long>(submits), double(depth_sum) / double(submits),
++                    static_cast<unsigned long long>(depth_max), static_cast<unsigned long long>(depth_hist[0]),
++                    static_cast<unsigned long long>(depth_hist[1]), static_cast<unsigned long long>(depth_hist[2]),
++                    static_cast<unsigned long long>(depth_hist[3]), double(ns_sum) / double(submits) / 1e6,
++                    double(ns_max) / 1e6, double(now_ns - window_start_ns) / 1e9);
++        std::fflush(stdout);
++        window_start_ns = now_ns;
++        submits = depth_sum = depth_max = ns_sum = ns_max = 0;
++        depth_hist = {};
+     }
++    return result;
+ }
+ 
+ static constexpr VkPipelineStageFlags wait_stage_mask = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -489,15 +489,22 @@
+     const bool emulated_mesh{mesh_draw && pipeline->IsEmulatedMesh()};
+     // /data/eden-nx2/mesh-draws-off.txt (EDEN_NX2_NO_MESH): drop them all, as builds before 017 did.
+     static const bool no_mesh = std::getenv("EDEN_NX2_NO_MESH") != nullptr;
+-    if (mesh_draw && (no_mesh || !emulated_mesh || direct_instances == 0)) {
++    // Draws with a task program are dropped unless /data/eden-nx2/task-draws-on.txt
++    // (EDEN_NX2_TASK_DRAWS): their emulation (task workgroups writing mesh output into the
++    // submission's arena) produced stretched triangles across the screen, the "vertex
++    // explosions" of 024-030, which went away whenever these draws did (025 mesh-draws-off,
++    // 026b rejecting the task programs). Mesh draws without a task program still run.
++    // Known gap: what those draws drew is missing until the task path is fixed.
++    static const bool task_draws = std::getenv("EDEN_NX2_TASK_DRAWS") != nullptr;
++    const bool dropped_task = mesh_draw && emulated_mesh && !task_draws && pipeline->MeshEmulationHasTask();
++    if (mesh_draw && (no_mesh || !emulated_mesh || direct_instances == 0 || dropped_task)) {
+         // Native task/mesh is not used here, and an indirect emulated draw has no group count to
+         // size its output by. Nothing waits on the dropped draw.
+         static std::atomic<u64> dropped{};
+         if (const u64 count = ++dropped; count <= 8 || count % 4096 == 0) {
+-            LOG_WARNING(Render_Vulkan, "EDEN_MESH_DRAW_DROPPED {} count={}",
+-                        direct_instances == 0 ? "indirect" : "unsupported", count);
+-            std::fprintf(stderr, "EDEN_MESH_DRAW_DROPPED %s count=%llu\n",
+-                         direct_instances == 0 ? "indirect" : "unsupported",
++            const char* const reason = dropped_task ? "task" : direct_instances == 0 ? "indirect" : "unsupported";
++            LOG_WARNING(Render_Vulkan, "EDEN_MESH_DRAW_DROPPED {} count={}", reason, count);
++            std::fprintf(stderr, "EDEN_MESH_DRAW_DROPPED %s count=%llu\n", reason,
+                          static_cast<unsigned long long>(count));
+         }
+         submitted = true;
+diff --git a/src/video_core/vulkan_common/vulkan_device.cpp b/src/video_core/vulkan_common/vulkan_device.cpp
+--- a/src/video_core/vulkan_common/vulkan_device.cpp
++++ b/src/video_core/vulkan_common/vulkan_device.cpp
+@@ -776,7 +776,15 @@
+             // 64 MiB blocks on discrete GPUs too: with 256 MiB ones, Switch 2 titles' mix of
+             // texture sizes left ~38% of the image blocks empty (2 GB of an 8 GB card in title
+             // 1), which the texture cache counted as used and kept evicting textures for.
+-            .preferredLargeHeapBlockSize = 64u * 1024u * 1024u,
++            // 16 MiB on the PS5 by default (EDEN_NX2_VMA_BLOCK_MIB, /data/eden-nx2/vma-block-mib.txt):
++            // the shared pool ran out with 529-907 MiB free inside partly used 64 MiB blocks
++            // (026-030), which a block only returns once wholly empty. Images of 8 MiB or more
++            // have memory of their own (layer 99zzzzk), so smaller blocks cost few allocations.
++            .preferredLargeHeapBlockSize = [] {
++                const char* const value = std::getenv("EDEN_NX2_VMA_BLOCK_MIB");
++                const u64 mib = value != nullptr ? std::strtoull(value, nullptr, 10) : 16;
++                return VkDeviceSize{(mib >= 4 && mib <= 256 ? mib : 16) << 20};
++            }(),
+             .pAllocationCallbacks = nullptr,
+ #ifdef EDEN_NX2_PS5_PROTO
+             .pDeviceMemoryCallbacks = &memory_callbacks,

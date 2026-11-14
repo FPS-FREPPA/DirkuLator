@@ -41,6 +41,52 @@ void main() {
     const bool colors = (text.loading & 0x08000000u) != 0u;
     // Vulkan counts rows from the top, hud_pick (like loading_scene) from the bottom left.
     const vec2 pixel = vec2(gl_FragCoord.x, float(text.width) - gl_FragCoord.y);
+    if ((text.loading & 0x04000000u) != 0u) {
+        // DirkuLator 0.5.20: a graph (hud.h, MakeHudGraphs, kHudGraphFlag): its label in the
+        // first two words, 104 one-byte samples in the rest, oldest first. Its box is 220 x 60
+        // units (kHudGraphWidth, kHudGraphHeight), the bars fill it under the label.
+        const vec2 box = vec2(220.0, 60.0) * unit * scale;
+        const vec2 local = gl_FragCoord.xy - vec2(float(text.x), float(text.y));
+        const vec4 panel = hud_panel(local, vec2(box.x, kHudBoxUnits * unit * scale));
+        const float pad = kHudPadUnits * unit * scale;
+        const float cap = kHudCapUnits * 0.8 * unit * scale;
+        const float top = pad + cap * 1.35;  // the plot starts under the label
+        const vec2 plot = vec2(box.x - 2.0 * pad, box.y - top - pad);
+        // The panel's corners for the whole box: hud_panel is sized by a chip's height, so take
+        // its rounding from a chip and its body from this box.
+        const vec2 q = abs(local - 0.5 * box) - 0.5 * box + kHudRadiusUnits * unit * scale;
+        const float edge = min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - kHudRadiusUnits * unit * scale;
+        vec4 result = vec4(panel.rgb, 0.78 * (1.0 - smoothstep(-0.75, 0.75, edge)));
+        const float px = local.x - pad;
+        const float up = (box.y - pad) - local.y;  // height above the plot's floor
+        if (px >= 0.0 && px < plot.x && up >= 0.0 && up <= plot.y) {
+            const int i = clamp(int(px / plot.x * 104.0), 0, 103);
+            const float sample_value = float((glyphs[2 + i / 4] >> uint(8 * (i % 4))) & 255u);
+            const float bad = float((text.loading >> 16) & 255u);
+            const float warn = float((text.loading >> 8) & 255u);
+            const float guide = float(text.loading & 255u);
+            const bool higher_better = (text.loading & 0x01000000u) != 0u;
+            int ink = kHudInkGood;
+            if (higher_better ? sample_value < warn : sample_value > warn) ink = kHudInkWarn;
+            if (higher_better ? sample_value < bad : sample_value > bad) ink = kHudInkBad;
+            // A faint floor for the plot, the bar, and the guide line over both.
+            result.rgb = mix(result.rgb, vec3(0.16, 0.18, 0.24), 0.6);
+            if (up <= sample_value / 255.0 * plot.y) result = vec4(hud_ink(ink), 0.92);
+            if (guide > 0.0 && abs(up - guide / 255.0 * plot.y) < 0.75 * unit * scale)
+                result = vec4(mix(result.rgb, kHudInk, 0.55), max(result.a, 0.85));
+        }
+        // The label: the first two words, the rest of the line empty.
+        uint label[28];
+        for (int i = 0; i < 28; ++i) label[i] = 0u;
+        label[0] = glyphs[0];
+        label[1] = glyphs[1];
+        Pick label_pick = Pick(-1, 0, vec2(0.0), 1.0);
+        hud_pick(label_pick, label, pixel,
+                 vec2(float(text.x) + pad, float(text.width) - (float(text.y) + pad + cap)), cap);
+        const float label_cover = pick_cover(label_pick);
+        color = vec4(mix(result.rgb, hud_ink(label_pick.ink), label_cover), mix(result.a, 1.0, label_cover));
+        return;
+    }
     const vec2 at = vec2(float(text.x) + kHudPadUnits * unit * scale,
                          float(text.width) - (float(text.y) + kHudBaselineUnits * unit * scale));
     Pick pick = Pick(-1, 0, vec2(0.0), 1.0);

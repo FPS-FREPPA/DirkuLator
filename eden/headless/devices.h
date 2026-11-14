@@ -14,6 +14,7 @@
 #include "button_mapping.h"
 #include "pad_haptics.h"
 #include "ps5_pad.hpp"
+#include "input_bridge.h"
 
 namespace Eden {
 // The PS5 controllers as the "virtual_gamepad" input engine that Eden binds every guest
@@ -118,6 +119,7 @@ private:
     void Rescan();
     void OpenSlot(std::size_t player, int user);
     void CloseSlot(std::size_t player);
+    Bridge::InputBridge input_bridge;
     std::shared_ptr<PadEngine> engine;
     float deadzone;
     float trigger_threshold;

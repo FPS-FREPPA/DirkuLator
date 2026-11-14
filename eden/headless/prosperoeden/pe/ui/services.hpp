@@ -1,4 +1,4 @@
-// ProsperoEden - What the launcher screens ask of the application.
+// DirkuLator - What the launcher screens ask of the application.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

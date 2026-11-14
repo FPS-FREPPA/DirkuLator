@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ProsperoEden - The launcher's screens take every colour from the theme in use.
+# DirkuLator - The launcher's screens take every colour from the theme in use.
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
 """check-launcher-theme.py

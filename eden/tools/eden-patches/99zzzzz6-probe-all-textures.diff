@@ -1,0 +1,70 @@
+Build 052 (diagnostic only): the depth probe logs every texture element (not only depth-compare ones) of programs
+that use depth compare, with the guest TIC (raw, format, type, address, size), to depth-samplers.txt and the log.
+For the screen shadow mask, whose static sun shadows are gated by linear depth from texture c2[0x20] (< 25 m).
+
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -727,12 +727,20 @@
+                 if constexpr (Spec::has_image_buffers) view_pos += Shader::NumDescriptors(info.image_buffer_descriptors);
+                 const u64 program = (u64{regs.pipelines[stage + 1].reserved[0] & 0xff} << 32) |
+                                     regs.pipelines[stage + 1].reserved[1];
+-                bool stage_has_depth{};
++                // Also every program named in dump-shaders.txt (EDEN_NATIVE_DUMP_KEYS), e.g. the pass that
++                // makes the linear depth the mask reads (it samples depth as a colour texture).
++                static const std::string dump_keys = [] {
++                    const char* keys = std::getenv("EDEN_NATIVE_DUMP_KEYS");
++                    return std::string{keys ? keys : ""};
++                }();
++                const u64 stage_key = VideoCommon::NativeDrawTrace::KeyAt(program);
++                const bool stage_has_depth =
++                    std::ranges::any_of(info.texture_descriptors, [](const auto& d) { return d.is_depth; }) ||
++                    (stage_key != 0 && dump_keys.find(fmt::format("{:016x}", stage_key)) != std::string::npos);
+                 for (const auto& desc : info.texture_descriptors) {
+                     for (u32 index = 0; index < desc.count; ++index, ++view_pos, ++sampler_pos) {
+-                        if (!desc.is_depth || view_pos >= views.size() || sampler_pos >= sampler_indices.size())
++                        if (!stage_has_depth || view_pos >= views.size() || sampler_pos >= sampler_indices.size())
+                             continue;
+-                        stage_has_depth = true;
+                         const u32 tsc_index = sampler_indices[sampler_pos];
+                         Tegra::Texture::TSCEntry tsc{};
+                         const GPUVAddr tsc_addr = regs.tex_sampler.Address() + u64{tsc_index} * sizeof(tsc);
+@@ -749,7 +757,7 @@
+                             depth_log_done.store(true, std::memory_order_relaxed);
+                             continue;
+                         }
+-                        if (depth_log_per_program[program] >= 24 || !depth_log_seen.insert(hash).second) continue;
++                        if (depth_log_per_program[program] >= 48 || !depth_log_seen.insert(hash).second) continue;
+                         ++depth_log_per_program[program];
+                         ++depth_log_lines;
+                         std::string view_text = "view=null";
+@@ -762,6 +770,18 @@
+                                                     view.range.base.level, view.range.extent.levels,
+                                                     view.modification_tick);
+                         }
++                        Tegra::Texture::TICEntry tic{};
++                        const GPUVAddr tic_addr = regs.tex_header.Address() +
++                                                  u64{views[view_pos].index} * sizeof(Tegra::Texture::TICEntry);
++                        if (views[view_pos].index <= regs.tex_header.limit &&
++                            gpu_memory->IsFullyMappedRange(tic_addr, sizeof(tic)))
++                            gpu_memory->ReadBlockUnsafe(tic_addr, &tic, sizeof(tic));
++                        const std::string tic_text = fmt::format(
++                            "depth={} tic_raw={:016x}:{:016x}:{:016x}:{:016x} tic_fmt={:#x} tic_rtype={} tic_type={} "
++                            "tic_addr={:#x} tic_size={}x{}",
++                            desc.is_depth ? 1 : 0, tic.raw[0], tic.raw[1], tic.raw[2], tic.raw[3],
++                            static_cast<u32>(tic.format.Value()), static_cast<u32>(tic.r_type.Value()),
++                            static_cast<u32>(tic.texture_type.Value()), tic.Address(), tic.Width(), tic.Height());
+                         const std::string depth_line = fmt::format(
+                                  "EDEN_DEPTH_SAMPLER stage={} prog={:#x} key={:016x} type={} handle=c{}[{:#x}] elem={} tic={} tsc={} {} "
+                                  "raw={:016x}:{:016x}:{:016x}:{:016x} cmp={} func={} wrap={},{},{} filter={},{},{} "
+@@ -777,8 +797,8 @@
+                                  static_cast<u32>(tsc.reduction_filter.Value()), tsc.min_lod_clamp.Value(),
+                                  tsc.max_lod_clamp.Value(), tsc.LodBias(), tsc.border_color[0], tsc.border_color[1],
+                                  tsc.border_color[2], tsc.border_color[3], tsc.srgb_conversion.Value());
+-                        VideoCommon::NativeDrawTrace::DepthLog(depth_line);
+-                        LOG_INFO(Render_Vulkan, "{}", depth_line);
++                        VideoCommon::NativeDrawTrace::DepthLog(depth_line + ' ' + tic_text);
++                        LOG_INFO(Render_Vulkan, "{} {}", depth_line, tic_text);
+                     }
+                 }
+                 if (stage_has_depth) {

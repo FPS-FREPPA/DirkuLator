@@ -1,4 +1,4 @@
-// ProsperoEden - Sample data for the launcher preview on a PC (no console, no game files).
+// DirkuLator - Sample data for the launcher preview on a PC (no console, no game files).
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

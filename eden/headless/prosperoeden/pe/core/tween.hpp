@@ -1,4 +1,4 @@
-// ProsperoEden - Easing curves and springs for UI motion.
+// DirkuLator - Easing curves and springs for UI motion.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

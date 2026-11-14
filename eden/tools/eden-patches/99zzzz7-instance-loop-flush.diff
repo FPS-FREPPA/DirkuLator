@@ -1,0 +1,134 @@
+Draw an instance batch before the state it was begun with is changed. Taken from Lichii. A draw.begin
+with InstanceId::First then Subsequent pairs is drawn as its first draw at once and as one instanced
+draw later; NVN's draw macros reset the base instance and its copy in c[0][0x644] right after the
+loop, before the macro returns, so the batch was drawn with base instance 0. OoT's menu text draws
+each line's glyphs this way and showed only the first letter of each line. Any register write that
+is not part of the loop now draws the waiting instances first.
+
+diff --git a/src/video_core/engines/draw_manager.cpp b/src/video_core/engines/draw_manager.cpp
+--- a/src/video_core/engines/draw_manager.cpp
++++ b/src/video_core/engines/draw_manager.cpp
+@@ -79,14 +79,49 @@
+     }
+ }
+ 
+-void Maxwell3D::DrawManager::DrawDeferred(Maxwell3D& maxwell3d) {
++void Maxwell3D::DrawManager::DrawDeferred(Maxwell3D& maxwell3d, bool loop_continues) {
+     if (draw_state.draw_mode != DrawMode::Instance || draw_state.instance_count == 0) {
++        if (!loop_continues) {
++            draw_state.drawn_instances = 0;
++        }
+         return;
+     }
+-    DrawEnd(maxwell3d, draw_state.instance_count + 1, true);
++    // The first draw of a batch also covers the loop's first instance; a batch that continues a
++    // loop split by a register write draws only the instances after the ones already drawn.
++    const bool continued = draw_state.drawn_instances != 0;
++    DrawEnd(maxwell3d, draw_state.instance_count + (continued ? 0 : 1), true);
++    draw_state.drawn_instances =
++        loop_continues ? draw_state.drawn_instances + draw_state.instance_count : 0;
+     draw_state.instance_count = 0;
+ }
+ 
++bool Maxwell3D::DrawManager::IsInstanceLoopMethod(u32 method) noexcept {
++    switch (method) {
++    case MAXWELL3D_REG_INDEX(draw.begin):
++    case MAXWELL3D_REG_INDEX(draw.end):
++    case MAXWELL3D_REG_INDEX(vertex_buffer.first):
++    case MAXWELL3D_REG_INDEX(vertex_buffer.count):
++    case MAXWELL3D_REG_INDEX(index_buffer.first):
++    case MAXWELL3D_REG_INDEX(index_buffer.count):
++    case MAXWELL3D_REG_INDEX(index_buffer32_first):
++    case MAXWELL3D_REG_INDEX(index_buffer16_first):
++    case MAXWELL3D_REG_INDEX(index_buffer8_first):
++    case MAXWELL3D_REG_INDEX(index_buffer32_subsequent):
++    case MAXWELL3D_REG_INDEX(index_buffer16_subsequent):
++    case MAXWELL3D_REG_INDEX(index_buffer8_subsequent):
++    case MAXWELL3D_REG_INDEX(draw_inline_index):
++    case MAXWELL3D_REG_INDEX(inline_index_2x16.count):
++    case MAXWELL3D_REG_INDEX(inline_index_2x16.even):
++    case MAXWELL3D_REG_INDEX(inline_index_4x8.count):
++    case MAXWELL3D_REG_INDEX(inline_index_4x8.index0):
++    case MAXWELL3D_REG_INDEX(vertex_array_instance_first):
++    case MAXWELL3D_REG_INDEX(vertex_array_instance_subsequent):
++        return true;
++    default:
++        return false;
++    }
++}
++
+ void Maxwell3D::DrawManager::DrawArray(Maxwell3D& maxwell3d, Maxwell3D::Regs::PrimitiveTopology topology, u32 vertex_first, u32 vertex_count, u32 base_instance, u32 num_instances) {
+     draw_state.topology = topology;
+     draw_state.vertex_buffer.first = vertex_first;
+@@ -101,6 +136,7 @@
+     draw_state.vertex_buffer.count = vertex_count;
+     if (!subsequent) {
+         draw_state.instance_count = 1;
++        draw_state.drawn_instances = 0;
+     }
+     draw_state.base_instance = draw_state.instance_count - 1;
+     draw_state.draw_mode = DrawMode::Instance;
+@@ -203,6 +239,9 @@
+         [[fallthrough]];
+     case DrawMode::General:
+         draw_state.base_instance = maxwell3d.regs.global_base_instance_index;
++        if (draw_state.draw_mode == DrawMode::Instance && draw_state.drawn_instances != 0) {
++            draw_state.base_instance += draw_state.drawn_instances + 1;
++        }
+         draw_state.base_index = maxwell3d.regs.global_base_vertex_index;
+         if (draw_state.draw_indexed) {
+             draw_state.index_buffer = maxwell3d.regs.index_buffer;
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -379,6 +379,12 @@
+ }
+ 
+ void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
++    // The instances after the first are drawn together once their loop ends, and they must see
++    // the state they were begun with: NVN's draw macros reset the base instance (and its copy in
++    // c[0][0x644]) right after the loop, before the macro returns.
++    if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method)) [[unlikely]] {
++        draw_manager.DrawDeferred(*this, true);
++    }
+ #ifdef EDEN_NX2_PS5_PROTO
+     NativeDrawShadowWrite(method, argument, false);
+ #endif
+@@ -583,6 +589,10 @@
+         ProcessMacro(system, method, base_start, amount, amount == methods_pending);
+         return;
+     }
++    // As in ProcessDirtyRegisters: the paths below write without it.
++    if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method)) [[unlikely]] {
++        draw_manager.DrawDeferred(*this, true);
++    }
+     switch (method) {
+     case MAXWELL3D_REG_INDEX(const_buffer.buffer):
+     case MAXWELL3D_REG_INDEX(const_buffer.buffer) + 1:
+diff --git a/src/video_core/engines/maxwell_3d.h b/src/video_core/engines/maxwell_3d.h
+--- a/src/video_core/engines/maxwell_3d.h
++++ b/src/video_core/engines/maxwell_3d.h
+@@ -3060,6 +3060,7 @@
+             Maxwell3D::Regs::IndexBuffer index_buffer;
+             u32 base_instance{};
+             u32 instance_count{};
++            u32 drawn_instances{};
+             std::vector<u8> inline_index_draw_indexes;
+         };
+         struct DrawTextureState {
+@@ -3086,7 +3087,14 @@
+         };
+         void ProcessMethodCall(Maxwell3D& maxwell3d, u32 method, u32 argument);
+         void Clear(Maxwell3D& maxwell3d, u32 layer_count);
+-        void DrawDeferred(Maxwell3D& maxwell3d);
++        /// Draws the waiting instances. loop_continues is set when the loop goes on afterwards.
++        void DrawDeferred(Maxwell3D& maxwell3d, bool loop_continues = false);
++        /// Instances after the first wait to be drawn together (DrawDeferred).
++        [[nodiscard]] bool HasDeferredDraw() const noexcept {
++            return draw_state.draw_mode == DrawMode::Instance && draw_state.instance_count != 0;
++        }
++        /// Methods an instance loop writes between its draws; any other write ends the loop.
++        [[nodiscard]] static bool IsInstanceLoopMethod(u32 method) noexcept;
+         void DrawArray(Maxwell3D& maxwell3d, Maxwell3D::Regs::PrimitiveTopology topology, u32 vertex_first, u32 vertex_count, u32 base_instance, u32 num_instances);
+         void DrawArrayInstanced(Maxwell3D& maxwell3d, Maxwell3D::Regs::PrimitiveTopology topology, u32 vertex_first, u32 vertex_count, bool subsequent);
+         void DrawIndex(Maxwell3D& maxwell3d, Maxwell3D::Regs::PrimitiveTopology topology, u32 index_first, u32 index_count, u32 base_index, u32 base_instance, u32 num_instances);

@@ -215,7 +215,7 @@ pkgs.mkShell {
 
   shellHook = ''
     export EDEN_NIX_PREFIX="$PATH:"
-    echo "ProsperoEden shell: LLVM 18.1 + LLVM 21.1, llvm-spirv @21"
+    echo "DirkuLator shell: LLVM 18.1 + LLVM 21.1, llvm-spirv @21"
     echo "  clang-18=$(clang-18 --version 2>/dev/null | head -1)"
     echo "  clang-21=$(clang-21 --version 2>/dev/null | head -1)"
     echo "  ld.lld-21=$(ld.lld-21 --version 2>/dev/null)"

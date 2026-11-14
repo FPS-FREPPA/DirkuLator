@@ -1,6 +1,6 @@
 #include "dump_paths.h"
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Everything the launcher remembers, in one JSON file (config/prosperoeden.json):
+// Everything the launcher remembers, in one JSON file (config/dirkulator.json):
 //
 //   {
 //     "version": 1,
@@ -215,7 +215,21 @@ inline bool ValidWallpaperName(std::string_view name) {
     return true;
 }
 
-inline std::string SettingsFile() { return ConfigFile("prosperoeden.json"); }
+// DirkuLator keeps its settings in config/dirkulator.json. A file from before the rename (prosperoeden.json)
+// takes that name the first time it is looked for, so nothing is lost; once it exists the old name is ignored.
+inline std::string SettingsFile() {
+    const std::string file = ConfigFile("dirkulator.json");
+    if (std::FILE* current = std::fopen(file.c_str(), "rb")) {
+        std::fclose(current);
+        return file;
+    }
+    const std::string legacy = ConfigFile("prosperoeden.json");
+    if (std::FILE* old = std::fopen(legacy.c_str(), "rb")) {
+        std::fclose(old);
+        std::rename(legacy.c_str(), file.c_str());
+    }
+    return file;
+}
 
 namespace Settings {
 using Json = nlohmann::json;
@@ -809,6 +823,7 @@ inline std::atomic<uint64_t> session_title{0};
 // a switch for each general value, and Library > Game settings > Performance one for each of a
 // game's own.
 inline constexpr uint64_t kMarioKartWorldTitle = 0x0400C3F00006E000ULL;
+inline constexpr uint64_t kOcarinaOfTimeTitle = 0x0400486024DEC000ULL;
 
 struct PerformanceSettings {
     bool block_list = false;     // compile the blocks of earlier sessions ahead (jit_list.h)
@@ -850,7 +865,8 @@ inline PerformanceSettings LoadPerformance(uint64_t title_id, const std::string&
     read("");
     // Mario Kart World runs out of the PS5's memory during its first load: compact memory is on
     // for it unless its own settings say otherwise (after viejunerd/Eglantine-PS5- 148d952).
-    if (title_id == kMarioKartWorldTitle) result.compact_memory = true;
+    // Ocarina of Time fills the same pool when gameplay starts (6.6 GiB of guest memory).
+    if (title_id == kMarioKartWorldTitle || title_id == kOcarinaOfTimeTitle) result.compact_memory = true;
     if (title_id) read("/games/" + Settings::TitleKey(title_id));
     return result;
 }

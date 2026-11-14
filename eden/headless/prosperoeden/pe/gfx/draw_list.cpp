@@ -1,4 +1,4 @@
-// ProsperoEden - 2D draw list: instanced shapes, glyphs and images.
+// DirkuLator - 2D draw list: instanced shapes, glyphs and images.
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 

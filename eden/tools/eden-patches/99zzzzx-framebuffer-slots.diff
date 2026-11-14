@@ -1,0 +1,15 @@
+Build 044 (from the 042 crash at 552 s: bad_alloc of 41 MiB in SlotVector<Framebuffer>::Reserve):
+- RemoveFramebuffers frees the framebuffer's slot (slot_framebuffers.erase), as upstream Eglantine
+  does; without it every framebuffer ever made kept a slot and the slot vector only doubled.
+
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -4120,6 +4120,7 @@
+                 last_framebuffer_serial = 0;
+             }
+             sentenced_framebuffers.Push(std::move(slot_framebuffers[framebuffer_id]));
++            slot_framebuffers.erase(framebuffer_id); // 044: from upstream Eglantine; the slot was never freed
+             it = framebuffers.erase(it);
+         } else {
+             ++it;

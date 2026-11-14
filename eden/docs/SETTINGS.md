@@ -79,7 +79,7 @@ The menu is `"performance" / "memory_layout"` in the settings file, so the two a
 ## Memory
 
 A game's console has 4 GiB of memory (or the larger layout chosen under **Memory**), and a game is
-handed most of it. ProsperoEden takes the console's memory for it only where the game writes: a part
+handed most of it. DirkuLator takes the console's memory for it only where the game writes: a part
 that was never written, or that the game's console cleared or freed whole, reads as zeroes from one
 shared block and takes nothing, and a part that holds only zeroes again is given back now and then.
 A 64-bit game holds 600 MiB to 2 GiB less of the console's memory this way, measured at the same
@@ -114,7 +114,7 @@ The presets are files in `/data/eden-nx2/user/post_presets` (`.fxp`; the app wri
 
 A game's own `reshade/` folder works like both folders at once: its presets (`.fxp`) are offered in that game's settings only, listed first, and the effects it holds (`.fx`, `.fxh`, and textures in `Textures/`) are used for that game, before an effect of the same name in `post_shaders/`. So a game folder can carry a preset made for it together with the effects it needs.
 
-Restart ProsperoEden after adding files: the list is read when the menu opens. A ReShade `.ini` preset does not load as it is; write its effects into a `.fxp` chain instead (below). A preset file of your own in that folder is listed beside them by its name: its `chain=` line names the effects in order, each with its technique and values (`Bloom.fx|Bloom|Radius=1.2,Amount=0.25;Sharpen.fx|Sharpen|Amount=0.75`). An effect it names that the console does not have is left out.
+Restart DirkuLator after adding files: the list is read when the menu opens. A ReShade `.ini` preset does not load as it is; write its effects into a `.fxp` chain instead (below). A preset file of your own in that folder is listed beside them by its name: its `chain=` line names the effects in order, each with its technique and values (`Bloom.fx|Bloom|Radius=1.2,Amount=0.25;Sharpen.fx|Sharpen|Amount=0.75`). An effect it names that the console does not have is left out.
 
 - It is drawn by the **Vulkan** renderer; with OpenGL the game shows as it is.
 - It applies when a game starts. A line at launch (`Post-processing:` in `stderr.log`) names the preset, or says why it is off.
@@ -126,7 +126,7 @@ Frame generation shows, between two pictures a game draws, one that is made up f
 
 **Frame gen method** chooses how the pictures are made: **MihawkGen**, a neural network that comes with the app and needs nothing else, or Lossless Scaling. A method that is not available on the console is skipped.
 
-Lossless Scaling's frame generation ([Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/)) cannot be included with ProsperoEden: for it you need your own copy of that program.
+Lossless Scaling's frame generation ([Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/)) cannot be included with DirkuLator: for it you need your own copy of that program.
 
 1. On the PC where Lossless Scaling is installed, find `Lossless.dll` in its folder (with Steam: `steamapps/common/Lossless Scaling`).
 2. Copy it to the console as `/data/eden-nx2/user/lossless/Lossless.dll`.
@@ -188,4 +188,4 @@ The launcher follows the language the PS5 is set to: Arabic, Chinese (simplified
 
 ## Update notices
 
-**Settings > Diagnostics > Update notices** (on by default) is the offer at the start when [homebrew.page](https://homebrew.page/ps5) lists a newer release of ProsperoEden: the update dialog, or the **Update available** notification when the app cannot install it itself (see [Updating](INSTALL.md#updating)). **Skip** answers one start; switched off, the app opens without the offer every time. It still asks homebrew.page, and the About screen names the newer version beside the one running. In the settings file it is `"system": { "update_notices": false }`, and it applies the next time ProsperoEden opens.
+**Settings > Diagnostics > Update notices** (on by default) is the offer at the start when [homebrew.page](https://homebrew.page/ps5) lists a newer release of DirkuLator: the update dialog, or the **Update available** notification when the app cannot install it itself (see [Updating](INSTALL.md#updating)). **Skip** answers one start; switched off, the app opens without the offer every time. It still asks homebrew.page, and the About screen names the newer version beside the one running. In the settings file it is `"system": { "update_notices": false }`, and it applies the next time DirkuLator opens.

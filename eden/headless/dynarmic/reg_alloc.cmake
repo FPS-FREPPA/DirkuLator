@@ -142,6 +142,9 @@ bool eden_alloc_r13 = true;
 bool eden_plain_ordered_reads = true;  // headless/CMakeLists.txt, ordered reads
 bool eden_fcmp_adc = true, eden_light_dmb = true, eden_checkbit_flags = true;  // fast_paths.cmake
 unsigned long long eden_dmb_dropped = 0, eden_checkbit_fused = 0;  // fast_paths.cmake
+bool eden_cond_flags = true;  // fast_paths.cmake
+unsigned long long eden_cond_fused = 0;  // fast_paths.cmake
+__thread int eden_cond_reg = -1;  // fast_paths.cmake: host register holding NZCV for EmitCond, or -1
 unsigned long long eden_free_moves_done = 0, eden_free_moves_spilled = 0;
 }
 

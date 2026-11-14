@@ -1,4 +1,4 @@
-// ProsperoEden - Launcher: Settings > Save sync. Each profile with the server it keeps its save
+// DirkuLator - Launcher: Settings > Save sync. Each profile with the server it keeps its save
 // data on (save-sync.json). Cross pairs one with a server without typing: the server shows in a
 // QR code and a short code, the player approves it on the phone signed in as the profile's user,
 // and the console gets a sign-in of its own. Square, twice, unlinks a profile.

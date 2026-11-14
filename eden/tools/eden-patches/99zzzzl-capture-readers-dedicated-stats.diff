@@ -1,0 +1,205 @@
+Build 029, from the 028 console runs and the independent 028 review:
+- Frame capture readers.txt: a capture request now arms one frame in which every texture or storage
+  image a draw or dispatch binds is recorded (image address, view layers, the binding programs), and
+  the capture follows at that frame's end. writers.txt only named the last writer of an image; in 028
+  the "composite" e82daf057f4b81d6 turned out to sample no texture at all, so the pass that blends
+  the fog layer was unknown. readers.txt gives the producer -> consumer edges of the captured frame.
+- EDEN_DEDICATED_IMAGES (with the 5 s VMA lines): live dedicated image allocations, their bytes, how
+  many were made and freed and the smallest. The 028c run with a 1 MiB threshold ended in a PS5
+  CE-108255-1 with 1.6 GiB free; these counts show what the threshold actually does.
+
+diff --git a/src/video_core/native_draw_trace.h b/src/video_core/native_draw_trace.h
+--- a/src/video_core/native_draw_trace.h
++++ b/src/video_core/native_draw_trace.h
+@@ -7,6 +7,7 @@
+ // vertex and index buffers. With the variable unset, Enabled() is one load of a static and nothing
+ // else runs.
+ #include <array>
++#include <compare>
+ #include <atomic>
+ #include <cstdlib>
+ #include <cstring>
+@@ -16,6 +17,7 @@
+ #include <string>
+ #include <unordered_map>
+ #include <unordered_set>
++#include <vector>
+ #include "common/common_types.h"
+ 
+ namespace VideoCommon::NativeDrawTrace {
+@@ -92,8 +94,22 @@
+     u32 kind{};
+     u64 first{};
+     u64 second{};
++    auto operator<=>(const Writer&) const = default;
+ };
+ inline thread_local Writer current_writer{};
++/// Every texture or storage image a draw or dispatch binds during the frame a capture is armed for
++/// (texture_cache.h FillImageViews): the capture writes them as readers.txt, so the pass that
++/// samples a captured image is known, not only the one that last wrote it (writers.txt). An image
++/// is identified by its address and the layers of the view, as the same address is reused.
++struct Read {
++    u64 image{};
++    u32 base_layer{};
++    u32 layers{};
++    Writer reader{};
++    auto operator<=>(const Read&) const = default;
++};
++inline bool capture_reads_armed{};
++inline std::vector<Read> capture_reads;
+ struct WriterScope {
+     explicit WriterScope(Writer writer) {
+         current_writer = writer;
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -484,8 +484,19 @@
+     static const char* const capture_dir = std::getenv("EDEN_NX2_CAPTURE_DIR");
+     static u64 capture_polls{};
+     std::error_code capture_error;
+-    if (capture_request && capture_dir && capture_polls++ % 30 == 0 &&
+-        std::filesystem::remove(capture_request, capture_error)) {
++    // The request arms the reads (readers.txt) for one frame; the capture follows at its end.
++    const bool capture_now = NativeDrawTrace::capture_reads_armed &&
++                             std::filesystem::remove(capture_request, capture_error);
++    if (NativeDrawTrace::capture_reads_armed && !capture_now) {
++        NativeDrawTrace::capture_reads_armed = false;
++        NativeDrawTrace::capture_reads.clear();
++    }
++    if (!capture_now && capture_request && capture_dir && capture_polls++ % 30 == 0 &&
++        std::filesystem::exists(capture_request, capture_error)) {
++        NativeDrawTrace::capture_reads.clear();
++        NativeDrawTrace::capture_reads_armed = true;
++    }
++    if (capture_now) {
+         static unsigned captures{};
+         const std::filesystem::path folder =
+             std::filesystem::path{capture_dir} / fmt::format("capture-{:02}-frame-{}", captures++, frame_tick);
+@@ -545,6 +556,23 @@
+                     << '\n';
+             ++order;
+         }
++        // readers.txt: each image a draw or dispatch bound in the captured frame, with how often.
++        {
++            std::map<NativeDrawTrace::Read, u64> reads;
++            for (const auto& read : NativeDrawTrace::capture_reads) {
++                ++reads[read];
++            }
++            std::ofstream readers(folder / "readers.txt");
++            readers << "# gpu_addr base_layer layers kind (1 draw: vertex-slot pixel, 3 compute: program) "
++                       "first second binds\n";
++            for (const auto& [read, count] : reads) {
++                readers << fmt::format("{:#x} {} {} {} {:#x} {:#x} {}\n", read.image, read.base_layer,
++                                       read.layers, read.reader.kind, read.reader.first,
++                                       read.reader.second, count);
++            }
++            NativeDrawTrace::capture_reads_armed = false;
++            NativeDrawTrace::capture_reads.clear();
++        }
+         LOG_WARNING(HW_GPU, "EDEN_FRAME_CAPTURE frame={} images={} folder={}", frame_tick, order,
+                     folder.string());
+         std::fprintf(stderr, "EDEN_FRAME_CAPTURE frame=%llu images=%u folder=%s\n",
+@@ -612,6 +640,16 @@
+         }
+         for (ImageViewInOut& view : views) {
+             view.id = VisitImageView(view.index, compute);
++            if (NativeDrawTrace::capture_reads_armed && view.id != NULL_IMAGE_VIEW_ID &&
++                NativeDrawTrace::capture_reads.size() < (1u << 20)) {
++                const ImageViewBase& image_view = slot_image_views[view.id];
++                if (!image_view.IsBuffer() && image_view.image_id) {
++                    NativeDrawTrace::capture_reads.push_back(
++                        {slot_images[image_view.image_id].gpu_addr,
++                         static_cast<u32>(image_view.range.base.layer),
++                         static_cast<u32>(image_view.range.extent.layers), NativeDrawTrace::current_writer});
++                }
++            }
+             if (capture && view.id != NULL_IMAGE_VIEW_ID) {
+                 const ImageViewBase& image_view = slot_image_views[view.id];
+                 if (!image_view.IsBuffer() && image_view.image_id) {
+diff --git a/src/video_core/vulkan_common/vulkan_memory_allocator.cpp b/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
+--- a/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
++++ b/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
+@@ -322,6 +322,20 @@
+                      ci.arrayLayers, static_cast<u32>(ci.format), static_cast<int>(result));
+     }
+     vk::Check(result);
++    if (allocation) {
++        VmaAllocationInfo2 info{};
++        vmaGetAllocationInfo2(allocator, allocation, &info);
++        if (info.dedicatedMemory) {
++            auto& stats = vk::dedicated_image_stats;
++            stats.created.fetch_add(1, std::memory_order_relaxed);
++            stats.live.fetch_add(1, std::memory_order_relaxed);
++            stats.live_bytes.fetch_add(info.allocationInfo.size, std::memory_order_relaxed);
++            u64 smallest = stats.smallest.load(std::memory_order_relaxed);
++            while (info.allocationInfo.size < smallest &&
++                   !stats.smallest.compare_exchange_weak(smallest, info.allocationInfo.size)) {
++            }
++        }
++    }
+ 
+     // Log GPU memory allocation for images
+     if (GPU::Logging::IsActive() &&
+@@ -541,6 +555,14 @@
+                  static_cast<u32>(properties->memoryTypes[type].propertyFlags), s.blockCount,
+                  s.blockBytes >> 20, s.allocationCount, s.allocationBytes >> 20);
+     }
++    {
++        const auto& d = vk::dedicated_image_stats;
++        const u64 smallest = d.smallest.load(std::memory_order_relaxed);
++        LOG_INFO(Render_Vulkan, "EDEN_DEDICATED_IMAGES live={} live_mib={} created={} freed={} smallest_kib={}",
++                 d.live.load(std::memory_order_relaxed), d.live_bytes.load(std::memory_order_relaxed) >> 20,
++                 d.created.load(std::memory_order_relaxed), d.freed.load(std::memory_order_relaxed),
++                 smallest == ~u64{} ? 0 : smallest >> 10);
++    }
+     std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets{};
+     vmaGetHeapBudgets(allocator, budgets.data());
+     for (u32 heap = 0; heap < properties->memoryHeapCount; ++heap) {
+diff --git a/src/video_core/vulkan_common/vulkan_wrapper.cpp b/src/video_core/vulkan_common/vulkan_wrapper.cpp
+--- a/src/video_core/vulkan_common/vulkan_wrapper.cpp
++++ b/src/video_core/vulkan_common/vulkan_wrapper.cpp
+@@ -548,6 +548,15 @@
+         return;
+     }
+     if (handle) {
++        if (allocation) {
++            VmaAllocationInfo2 info{};
++            vmaGetAllocationInfo2(allocator, allocation, &info);
++            if (info.dedicatedMemory) {
++                dedicated_image_stats.freed.fetch_add(1, std::memory_order_relaxed);
++                dedicated_image_stats.live.fetch_sub(1, std::memory_order_relaxed);
++                dedicated_image_stats.live_bytes.fetch_sub(info.allocationInfo.size, std::memory_order_relaxed);
++            }
++        }
+         vmaDestroyImage(allocator, handle, allocation);
+     }
+ }
+diff --git a/src/video_core/vulkan_common/vulkan_wrapper.h b/src/video_core/vulkan_common/vulkan_wrapper.h
+--- a/src/video_core/vulkan_common/vulkan_wrapper.h
++++ b/src/video_core/vulkan_common/vulkan_wrapper.h
+@@ -7,6 +7,7 @@
+ #pragma once
+ 
+ #include <array>
++#include <atomic>
+ #include <exception>
+ #include <limits>
+ #include <memory>
+@@ -682,6 +683,17 @@
+     }
+ };
+ 
++/// Images with their own device memory (VMA dedicated allocations, layer 99zzzzl): what is live and
++/// how many were made and freed, logged with the VMA statistics (EDEN_DEDICATED_IMAGES).
++struct DedicatedImageStats {
++    std::atomic<u64> live{};
++    std::atomic<u64> live_bytes{};
++    std::atomic<u64> created{};
++    std::atomic<u64> freed{};
++    std::atomic<u64> smallest{~u64{}};
++};
++inline DedicatedImageStats dedicated_image_stats;
++
+ class ImageBacking {
+ public:
+     virtual ~ImageBacking() = default;

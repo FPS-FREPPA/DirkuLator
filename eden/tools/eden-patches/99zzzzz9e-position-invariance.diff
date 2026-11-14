@@ -1,0 +1,55 @@
+DirkuLator 0.5.4rc: position invariance (from nxnative #1673 / #1789 for OoT's EQUAL depth passes). Geometry stages
+(vertex, tessellation, geometry, task, mesh) decorate every float add/mul/fma NoContraction; vertex Position and the
+mesh-emulation vertex shader's Position are Invariant. Fragment/compute unchanged. Translator salt bumped.
+
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp
+@@ -11,7 +11,11 @@
+ namespace {
+ Id Decorate(EmitContext& ctx, IR::Inst* inst, Id op) {
+     const auto flags{inst->Flags<IR::FpControl>()};
+-    if (flags.no_contraction) {
++    // 0.5.4: geometry stages compute positions that other programs must match bit for bit (a depth
++    // pre-pass and an EQUAL colour pass drawn by different programs), so none of their float math
++    // is contracted or reordered by the host compiler.
++    const bool geometry{ctx.stage != Stage::Fragment && ctx.stage != Stage::Compute};
++    if (flags.no_contraction || geometry) {
+         ctx.Decorate(op, spv::Decoration::NoContraction);
+     }
+     return op;
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
+@@ -507,6 +507,7 @@
+     const Id output_f32{module.TypePointer(spv::StorageClass::Output, f32_type)};
+     const Id position{module.AddGlobalVariable(output_vec4, spv::StorageClass::Output)};
+     module.Decorate(position, spv::Decoration::BuiltIn, spv::BuiltIn::Position);
++    module.Decorate(position, spv::Decoration::Invariant); // 0.5.4: EQUAL depth passes
+     interfaces.push_back(position);
+     std::array<Id, IR::NUM_GENERICS> generics{};
+     for (const u32 line : mesh.vertex_lines) {
+diff --git a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+--- a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
++++ b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+@@ -1917,6 +1917,8 @@
+     if (runtime_info.convert_depth_mode || info.stores.AnyComponent(IR::Attribute::PositionX) ||
+         stage == Stage::VertexB) {
+         output_position = DefineOutput(*this, F32[4], invocations, spv::BuiltIn::Position);
++        // 0.5.4: positions of different programs must match exactly (EQUAL depth passes).
++        Decorate(output_position, spv::Decoration::Invariant);
+     }
+     if (info.stores[IR::Attribute::PointSize] || runtime_info.fixed_state_point_size) {
+         if (stage == Stage::Fragment) {
+diff --git a/src/shader_recompiler/frontend/ampere/native.h b/src/shader_recompiler/frontend/ampere/native.h
+--- a/src/shader_recompiler/frontend/ampere/native.h
++++ b/src/shader_recompiler/frontend/ampere/native.h
+@@ -43,7 +43,7 @@
+ 
+ // Salt mixed into the pipeline cache identity of native-translated programs. Bump it whenever the
+ // native translation changes so cached results of an older translator are never reused.
+-inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a00013ULL;
++inline constexpr u64 NATIVE_TRANSLATOR_SALT = 0x4f554e4345a00014ULL;
+ 
+ // Maxwell Location offset of native instruction `index` (same mapping the lowering uses).
+ [[nodiscard]] constexpr u32 LocationOf(u32 index) {
