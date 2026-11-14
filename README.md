@@ -11,9 +11,9 @@ content version is `00.005.054` and its application title is **DirkuLator**
 (`PPSA99862`). The `rc` designation belongs to the release tag and archive name;
 the console requires a numeric content version.
 
-The first source snapshot is published while the clean native rebuild and
-qualification are being completed. The release notes and build receipts state
-the actual checks performed; source publication alone is not a binary test pass.
+The native build, package checks, and component sanitizer regressions passed.
+See [BUILD-NOTES.md](BUILD-NOTES.md) and [VALIDATION.json](VALIDATION.json) for
+exact coverage and limits. This candidate has not been tested on a physical PS5.
 
 ## Scope
 

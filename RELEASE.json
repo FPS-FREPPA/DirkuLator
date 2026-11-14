@@ -3,5 +3,8 @@
   "version": "0.5.54rc",
   "content_version": "00.005.054",
   "channel": "development",
-  "validated_binary": false
+  "native_build_verified": true,
+  "component_tests_passed": true,
+  "hardware_tested": false,
+  "known_graphics_defects": true
 }
