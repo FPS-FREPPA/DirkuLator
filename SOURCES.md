@@ -22,3 +22,11 @@ diagnostics are excluded from the public source and are not required to build it
 
 Keep the matching source, dependency pins, notices, and build instructions
 available whenever redistributing a binary, and follow each included license.
+
+## Repository documentation review
+
+The dated modification notice, license inventory, contribution guide, expanded
+project goals, and ignore/line-ending rules are maintained on the repository
+branches. Follow-up documentation commits preserve the original `v0.5.54rc`
+candidate tag and its tested emulator code. The development release also carries
+a repository-review supplement with those updated notices and documents.

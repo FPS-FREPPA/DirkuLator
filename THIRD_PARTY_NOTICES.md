@@ -12,7 +12,8 @@ builds on the following projects, each under its own license.
   Vulkan Memory Allocator, ENet, frozen, cpp-httplib, nlohmann/json, and the time
   zone data. Each keeps its upstream license.
 - **[FFmpeg](https://ffmpeg.org)**, LGPL-2.1-or-later. Built from Eden's pinned
-  source with only the H.264, VP8 and VP9 decoders.
+  source for the enabled decoders, including H.264, VP8, VP9 and AV1 through
+  dav1d. The pinned build recipe records the actual decoder configuration.
 - **[OpenSSL](https://www.openssl.org)**, Apache-2.0, and
   **[zlib](https://zlib.net)**, zlib license. Taken from the
   [pacbrew](https://github.com/ps5-payload-dev/pacbrew-repo) PS5 packages.

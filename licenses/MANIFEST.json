@@ -1,0 +1,638 @@
+{
+  "port/LICENSE": {
+    "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "bytes": 35149
+  },
+  "port/third_party/miniz/LICENSE": {
+    "sha256": "6f20fa7672b00e2e975c291df737cf227addf3ad32e36fef3fe0f416e4664d3d",
+    "bytes": 1162
+  },
+  "port/third_party/lua/LICENSE.txt": {
+    "sha256": "d65b7d88fbce40eb1211bac8e5bd4e5642f22e6aaaa86ce7e0a06b3ca2f90c58",
+    "bytes": 1272
+  },
+  "port/third_party/qrcodegen/LICENSE": {
+    "sha256": "99e0c825c493346aed3ccd5170f67b5df253645d65ae76ace15677ab668eac35",
+    "bytes": 1199
+  },
+  "port/third_party/bcdec/LICENSE": {
+    "sha256": "2414c782587f6e96661cb0d19d752432ddecfcc1a221b4cb12bc2253a54dc5ac",
+    "bytes": 2564
+  },
+  "core/LICENSE.txt": {
+    "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "bytes": 35149
+  },
+  "core/src/android/app/src/main/java/org/yuzu/yuzu_emu/fragments/LicenseBottomSheetDialogFragment.kt": {
+    "sha256": "f60729853b2cb1720b5712251b1c5266d8926f728f816fcdc6f993b9a107b4d3",
+    "bytes": 1976
+  },
+  "core/src/android/app/src/main/java/org/yuzu/yuzu_emu/fragments/LicensesFragment.kt": {
+    "sha256": "d1968b5326505e0aa5a8a80ef784554661e67dabfd8af27b93b44a849288d8ff",
+    "bytes": 4917
+  },
+  "core/src/android/app/src/main/java/org/yuzu/yuzu_emu/adapters/LicenseAdapter.kt": {
+    "sha256": "4c69d050ad9f8ed22e8ec090b11de825e2630494950380c93e252cb8618813c4",
+    "bytes": 1652
+  },
+  "core/src/android/app/src/main/java/org/yuzu/yuzu_emu/model/License.kt": {
+    "sha256": "11891da76add1151e7f152ac4150c2aa5a3b61da099c45a2315bde8f5030c341",
+    "bytes": 364
+  },
+  "core/externals/FidelityFX-FSR/license.txt": {
+    "sha256": "db089274ce766da70f5b7d791029c3486f9f9e27c8c79c652689603d3192e802",
+    "bytes": 1094
+  },
+  "core/.forgejo/workflows/license-header.yml": {
+    "sha256": "401e0d6f02c82b459d2e85d481179f47eabff3da8b8fcd25997a72596cc18103",
+    "bytes": 417
+  },
+  "core/.ci/license-header.sh": {
+    "sha256": "974ad5919b57556deae2f04a3a900ce2c854533af70ec11c9d2d4fa7d9cbeb33",
+    "bytes": 5544
+  },
+  "core-dependencies/vulkanheaders/v1.4.345/LICENSE.md": {
+    "sha256": "ac24e5ea920e4318e4d02c4086ae51f53cfb03feed06c18df1019e7ada1ec7bc",
+    "bytes": 458
+  },
+  "core-dependencies/frozen/61dce5ae18/LICENSE": {
+    "sha256": "f6099ed23682840ae60a76fce378faae9b5c75f7d162188883e13b790ca18b98",
+    "bytes": 11340
+  },
+  "core-dependencies/frozen/61dce5ae18/AUTHORS": {
+    "sha256": "e87cb6aaac199b412d4a0c85b3507891dfa5054a5b80169b07e39142a9226264",
+    "bytes": 119
+  },
+  "core-dependencies/lz4/ebb370ca83/LICENSE": {
+    "sha256": "4bc9c403f6b679cc076dee210e0e21c27b4e8f6d3fb43d85364c76657bfaaac5",
+    "bytes": 646
+  },
+  "core-dependencies/lz4/ebb370ca83/examples/COPYING": {
+    "sha256": "609b910ef05c9c855ecc1da155a36ed0f57514eac452cf93446530b5ea4b3bc3",
+    "bytes": 14901
+  },
+  "core-dependencies/lz4/ebb370ca83/lib/LICENSE": {
+    "sha256": "8b58c446121a109ccf32edc094bba3010a3d85e4ee3702950db55e4d3e87736c",
+    "bytes": 1311
+  },
+  "core-dependencies/lz4/ebb370ca83/tests/COPYING": {
+    "sha256": "609b910ef05c9c855ecc1da155a36ed0f57514eac452cf93446530b5ea4b3bc3",
+    "bytes": 14901
+  },
+  "core-dependencies/lz4/ebb370ca83/contrib/debian/copyright": {
+    "sha256": "4f6ef9d0e844bf432d6a0abb2623f5a61175ae40f7f0e3665490311d89e3af87",
+    "bytes": 321
+  },
+  "core-dependencies/lz4/ebb370ca83/contrib/djgpp/LICENSE": {
+    "sha256": "d011d1e02cb32b71c1ce2922ab41a2e2ad30f4ecf8de22c078d53618205abc05",
+    "bytes": 1292
+  },
+  "core-dependencies/lz4/ebb370ca83/programs/COPYING": {
+    "sha256": "609b910ef05c9c855ecc1da155a36ed0f57514eac452cf93446530b5ea4b3bc3",
+    "bytes": 14901
+  },
+  "core-dependencies/opus/a3f0ec02b3/COPYING": {
+    "sha256": "01e1167d54a096d123cf6dfbbeb19587278845c6481d2d66d545669846079551",
+    "bytes": 1945
+  },
+  "core-dependencies/opus/a3f0ec02b3/AUTHORS": {
+    "sha256": "f9fd849e652219ce98e008303370b352d37663d0ffb27b8dc514ad93c9c7438b",
+    "bytes": 239
+  },
+  "core-dependencies/opus/a3f0ec02b3/LICENSE_PLEASE_READ.txt": {
+    "sha256": "7efb4989e0cd1b256229bdf2f09300c5d14e35db0e7476bfb87fac243498273d",
+    "bytes": 703
+  },
+  "core-dependencies/vulkanmemoryallocator/v3.3.0/LICENSE.txt": {
+    "sha256": "8d70e4cf2a9941f6454da71cd60e38484dd3e34810c824760d550e982af6d97a",
+    "bytes": 1099
+  },
+  "core-dependencies/gamemode/ce6fe122f3/LICENSE.txt": {
+    "sha256": "d442aba5b23769bf0f1f689d2c3d1d704c82afb28b0e07ac8d9058dad5fed6b9",
+    "bytes": 1532
+  },
+  "core-dependencies/zbic/11b08f2712264bbed731545085cbd9702096ceb7/LICENSE": {
+    "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+    "bytes": 18092
+  },
+  "core-dependencies/boost/1.92.0/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/tools/inspect/src/copyright_check.cpp": {
+    "sha256": "c31b259287510e3c04f78bb7b36796d45834dc1d86f528eff59381d2a3746e0f",
+    "bytes": 1000
+  },
+  "core-dependencies/boost/1.92.0/tools/inspect/src/copyright_check.hpp": {
+    "sha256": "5f5945fabdc65a3444bd858fc5088d9042ceaafa062ef2883acc61d6e676483b",
+    "bytes": 1037
+  },
+  "core-dependencies/boost/1.92.0/tools/inspect/src/license_check.hpp": {
+    "sha256": "f1598455d2cb69634f6db48596e010fcf49db8f25a5d21ed3fcb2a402f0a485f",
+    "bytes": 1113
+  },
+  "core-dependencies/boost/1.92.0/tools/inspect/src/license_check.cpp": {
+    "sha256": "9ff54c34e5db5121c98ec80b3cb9dd9539090589a4bd201ac45e88cf62423fbc",
+    "bytes": 1398
+  },
+  "core-dependencies/boost/1.92.0/tools/boostbook/xsl/caramel/LICENSE": {
+    "sha256": "2f59ce71dd2b1538db0976cf0886685de2cead1dbf1ddebabd90c7df21e469e7",
+    "bytes": 3090
+  },
+  "core-dependencies/boost/1.92.0/tools/docca/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/tools/boostlook/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/dynamic_bitset/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/qvm/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/pool/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/hana/LICENSE.md": {
+    "sha256": "367ef0a8422dcd9cf3285610f6eb2a499de12e8b1c7af6154009addf088c903d",
+    "bytes": 1372
+  },
+  "core-dependencies/boost/1.92.0/libs/numeric/odeint/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/numeric/interval/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/ptr_container/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/logic/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/leaf/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/charconv/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/algorithm/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/tokenizer/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/redis/LICENSE.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/geometry/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/exception/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/yap/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/safe_numerics/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/stl_interfaces/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/decimal/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/move/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/parser/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/mqtt5/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/property_map/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/histogram/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/openmethod/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/uuid/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/pfr/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/container/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/mysql/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/rational/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/compute/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/gil/LICENSE.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/locale/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/python/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/date_time/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/date_time/xmldoc/license.xml": {
+    "sha256": "477ea844df37c895dbf0aa39f935631965b0bc963024d6ca36215294cf0ed7ee",
+    "bytes": 1467
+  },
+  "core-dependencies/boost/1.92.0/libs/iostreams/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/beast/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/nowide/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/concept_check/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/lockfree/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/callable_traits/LICENSE.md": {
+    "sha256": "754f0d4ecb5f254feaa1b0d3e4180696a8af2abcc2969e5abf590834a63610e5",
+    "bytes": 1373
+  },
+  "core-dependencies/boost/1.92.0/libs/signals2/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/hof/LICENSE.md": {
+    "sha256": "859bddbbef21decf692e6bd16bd8a6c96cde1b989fa88ddd63bd2bde98b58b2e",
+    "bytes": 1373
+  },
+  "core-dependencies/boost/1.92.0/libs/url/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/contract/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/unordered/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/mpl/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/scope/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/assign/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/multiprecision/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/format/LICENSE": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/boost/1.92.0/libs/static_string/LICENSE_1_0.txt": {
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
+  },
+  "core-dependencies/enet/v1.3.18/LICENSE": {
+    "sha256": "a29cd246638974da7c6edf423a0a69d4a6f7d759940b7cfa9a2bc3442ac3834c",
+    "bytes": 1060
+  },
+  "core-dependencies/enet/v1.3.18/docs/license.dox": {
+    "sha256": "5d54b300b7cdd64b99df61ad290567a73799873c3e7dd8e80db1089ed559a570",
+    "bytes": 1094
+  },
+  "core-dependencies/sirit/v1.0.5/LICENSE": {
+    "sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+    "bytes": 34523
+  },
+  "core-dependencies/sirit/v1.0.5/LICENSE.txt": {
+    "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "bytes": 35149
+  },
+  "core-dependencies/vulkanutilitylibraries/v1.4.345/LICENSE.md": {
+    "sha256": "69760673abf91cfd0280ae73739a29c078f493804d9016a122b3b189b48ad6e6",
+    "bytes": 304
+  },
+  "core-dependencies/spirv-headers/vulkan-sdk-1.4.341.0/LICENSE": {
+    "sha256": "ea43b1de38a6f90c488800d66dec1ed671e68cda530266bc96951fb5b6307613",
+    "bytes": 23503
+  },
+  "core-dependencies/httplib/v0.46.0/LICENSE": {
+    "sha256": "4b45cbe16d7b71b89ae6127e26e0d90a029198ca5e958ad8e3d0b8bbed364d8b",
+    "bytes": 1075
+  },
+  "core-dependencies/xbyak/v7.40.1/COPYRIGHT": {
+    "sha256": "7e411d5c5d38501a504843f58afb6824439c828872b35d2ff1e892e73fd1a30d",
+    "bytes": 1501
+  },
+  "core-dependencies/sdl3/release-3.4.8/LICENSE.txt": {
+    "sha256": "1c040b8271b37e5076359f8fd54240e371114112924d2df81ef87c7d6a1dfdfd",
+    "bytes": 884
+  },
+  "core-dependencies/sdl3/release-3.4.8/src/hidapi/LICENSE-gpl3.txt": {
+    "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+    "bytes": 35147
+  },
+  "core-dependencies/sdl3/release-3.4.8/src/hidapi/AUTHORS.txt": {
+    "sha256": "38102075d829116ee23d7a1fe0cb53f0c6932a9275da0ca1a3885b44db1963b4",
+    "bytes": 425
+  },
+  "core-dependencies/sdl3/release-3.4.8/src/hidapi/LICENSE.txt": {
+    "sha256": "7d3b087c34f35d4d538e3bcddd1ff8f66e92f9ef336881999482800ddf840913",
+    "bytes": 530
+  },
+  "core-dependencies/sdl3/release-3.4.8/src/hidapi/LICENSE-bsd.txt": {
+    "sha256": "30eb1bef29b46f8ba7ab8b416035dbd93cb034a45481dd97815b944284582cd2",
+    "bytes": 1534
+  },
+  "core-dependencies/sdl3/release-3.4.8/src/hidapi/LICENSE-orig.txt": {
+    "sha256": "fb5436aa63d1b71a8dfbf74ecaf1a5b4e1ec4df7f80074d11fec99284f69ca5f",
+    "bytes": 264
+  },
+  "core-dependencies/sdl3/release-3.4.8/src/video/yuv2rgb/LICENSE": {
+    "sha256": "f7d74004cc75778cae46c5f0139f244d67c07ef64cf51937e8272352197dcb18",
+    "bytes": 1480
+  },
+  "core-dependencies/sdl3/release-3.4.8/test/COPYING": {
+    "sha256": "d5a549e4a7b88cb696d0db15b21830061131ed361257ab399a33ca08ce0b33d5",
+    "bytes": 210
+  },
+  "core-dependencies/sdl3/release-3.4.8/test/LICENSE.txt": {
+    "sha256": "129fbd972915047e54d88f6f1884a13bf6d79c18eeb40646193d7241c9270ae5",
+    "bytes": 1356
+  },
+  "core-dependencies/zstd/b8d6101fba/LICENSE": {
+    "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8",
+    "bytes": 1549
+  },
+  "core-dependencies/zstd/b8d6101fba/COPYING": {
+    "sha256": "f9c375a1be4a41f7b70301dd83c91cb89e41567478859b77eef375a52d782505",
+    "bytes": 18091
+  },
+  "core-dependencies/reshade/v6.8.0/LICENSE.md": {
+    "sha256": "237ded5b8344f820113efab1e65e91e1f159d9202c5b4856606a0590d3ffdab0",
+    "bytes": 1481
+  },
+  "core-dependencies/reshade/v6.8.0/examples/11-obs_capture/LICENSE.txt": {
+    "sha256": "f93ae87f375c442e0c24b4fc0a41fe637e39ca2cd7ce1257d39fb7866ced0d22",
+    "bytes": 17998
+  },
+  "core-dependencies/reshade/v6.8.0/deps/d3d911on12/LICENSE.txt": {
+    "sha256": "fd532481d828e13a0b13ccb598e02338a3617740675a862ee6bdc1541b68e93d",
+    "bytes": 1073
+  },
+  "core-dependencies/reshade/v6.8.0/deps/openvr/LICENSE": {
+    "sha256": "f56ff606104d4ef18e617921a75c73ad73b5a1a1d70c69590c29de16919e04ad",
+    "bytes": 1488
+  },
+  "core-dependencies/reshade/v6.8.0/deps/d3d12on7/LICENSE.txt": {
+    "sha256": "db7f7695c04c02150be7ef961a106120e7cb516584ce6bcf9e14dc4907851887",
+    "bytes": 9841
+  },
+  "core-dependencies/ffmpeg/c7b5f1537d/COPYING.LGPLv3": {
+    "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
+    "bytes": 7651
+  },
+  "core-dependencies/ffmpeg/c7b5f1537d/LICENSE.md": {
+    "sha256": "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af",
+    "bytes": 4346
+  },
+  "core-dependencies/ffmpeg/c7b5f1537d/COPYING.LGPLv2.1": {
+    "sha256": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30",
+    "bytes": 26517
+  },
+  "core-dependencies/ffmpeg/c7b5f1537d/COPYING.GPLv3": {
+    "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+    "bytes": 35147
+  },
+  "core-dependencies/ffmpeg/c7b5f1537d/COPYING.GPLv2": {
+    "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+    "bytes": 18092
+  },
+  "core-dependencies/ffmpeg/c7b5f1537d/doc/authors.texi": {
+    "sha256": "fb5fac6dd8f7474033e933814491a8297d8723c52be4dcbcc82eef9c4f008dd2",
+    "bytes": 403
+  },
+  "core-dependencies/nlohmann_json/v3.12.0/LICENSE.MIT": {
+    "sha256": "46a65cffd1ea955132d95a8dd921640714a8d6b537d2e4e482d31145ae95b603",
+    "bytes": 1076
+  },
+  "core-dependencies/nlohmann_json/v3.12.0/docs/mkdocs/docs/home/license.md": {
+    "sha256": "d4b7ed0261c2c840e9ccc7d483b3b659bfddc8be797f3007da080f0c4a78d960",
+    "bytes": 1995
+  },
+  "core-dependencies/fmt/12.1.0/LICENSE": {
+    "sha256": "07580f2a3b35709ce703d523f447b242f6dfec7582a8c0df102c7fa2849375f8",
+    "bytes": 1431
+  },
+  "native-dependencies/libgav1-src/LICENSE": {
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "bytes": 11358
+  },
+  "native-dependencies/libgav1-src/AUTHORS": {
+    "sha256": "161b003e23e84069189c06028a1ad5f220760d79f5352915413630d9599eff0c",
+    "bytes": 295
+  },
+  "native-dependencies/libgav1-src/tests/third_party/libvpx/LICENSE": {
+    "sha256": "aa56ba9024f01edde9bfa5f5364644e6dd305874c3da8b73b92eb8af05539861",
+    "bytes": 1536
+  },
+  "pinned-inputs/harfbuzz-12.3.2/COPYING": {
+    "sha256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64",
+    "bytes": 1971
+  },
+  "pinned-inputs/harfbuzz-12.3.2/src/ms-use/COPYING": {
+    "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
+    "bytes": 1141
+  },
+  "pinned-inputs/lapy-ps5-payload-sdk-v0.42/target/include/sys/copyright.h": {
+    "sha256": "585f520dfde597ebcb5017d47a3c5a0a8bd126b84601b79591b2e71721214be2",
+    "bytes": 2308
+  },
+  "pinned-inputs/ps5-homebrew-ui-aed286b8/LICENSE": {
+    "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "bytes": 35149
+  },
+  "pinned-inputs/pacbrew-0.40.2/opt/ps5-payload-sdk/target/include/sys/copyright.h": {
+    "sha256": "585f520dfde597ebcb5017d47a3c5a0a8bd126b84601b79591b2e71721214be2",
+    "bytes": 2308
+  },
+  "pinned-inputs/pacbrew-0.40.2/opt/ps5-payload-sdk/target/user/homebrew/share/licenses/SDL2/LICENSE.txt": {
+    "sha256": "97f35b302b361680ec1e891e95d2d52097bb95abff361434916d99dc1305f127",
+    "bytes": 884
+  },
+  "pinned-inputs/pacbrew-0.40.2/opt/ps5-payload-sdk/target/user/homebrew/share/doc/expat/AUTHORS": {
+    "sha256": "59f14371c6b75912cfebb46e6247ee5146766e803a0365b124e5d3011e7d0877",
+    "bytes": 142
+  },
+  "pinned-inputs/pacbrew-0.40.2/opt/ps5-payload-sdk/target/user/homebrew/share/doc/xz/COPYING": {
+    "sha256": "29a1e305b2e34eefe5d4602d00cde1d528b71c5d9f2eec5106972cf6ddb6f73f",
+    "bytes": 3347
+  },
+  "pinned-inputs/pacbrew-0.40.2/opt/ps5-payload-sdk/target/user/homebrew/share/doc/xz/AUTHORS": {
+    "sha256": "07def6a20ec5430b6ad04cf1286da3f53fbb86cf6d2026119945ccd55d3a2258",
+    "bytes": 1402
+  },
+  "pinned-inputs/pacbrew-0.40.2/opt/ps5-payload-sdk/target/user/homebrew/share/doc/xz/COPYING.GPLv2": {
+    "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+    "bytes": 18092
+  },
+  "pinned-inputs/pacbrew-0.40.2/opt/ps5-payload-sdk/target/user/homebrew/share/doc/libutp/LICENSE": {
+    "sha256": "73b400bf61dde52223dae1642205ca187f1a6b24a508dcce52bf386c27a0e58c",
+    "bytes": 1065
+  },
+  "pinned-inputs/pacbrew-0.40.2/opt/ps5-payload-sdk/target/user/homebrew/share/doc/libjpeg-turbo/LICENSE.md": {
+    "sha256": "60c756742db3ad1913304e8b13f0e86e22e51adb50cc0b3333c163f7e45ceec1",
+    "bytes": 5213
+  },
+  "pinned-inputs/pacbrew-0.40.2/opt/ps5-payload-sdk/target/user/homebrew/share/doc/libsamplerate/license.md": {
+    "sha256": "9722032e4b5684f0ecd399480183a9029623636add1e9515621defaf8dbcf3ed",
+    "bytes": 377
+  },
+  "pinned-inputs/pacbrew-0.40.2/opt/ps5-payload-sdk/target/user/homebrew/include/RmlUi/Core/Containers/LICENSE.txt": {
+    "sha256": "f8314901f32a5e132372f2568c77d5482d226582bbc92456d9d4d486029835a6",
+    "bytes": 2549
+  },
+  "pinned-inputs/pacbrew-0.40.2/opt/ps5-payload-sdk/target/user/homebrew/include/llvm/Support/LICENSE.TXT": {
+    "sha256": "54cbc326a78b9400065bfc5830a57fdcdaf808286d4ac35d8a9e324aa77b7241",
+    "bytes": 303
+  },
+  "pinned-inputs/ffmpeg-c7b5f1537d/COPYING.LGPLv3": {
+    "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
+    "bytes": 7651
+  },
+  "pinned-inputs/ffmpeg-c7b5f1537d/LICENSE.md": {
+    "sha256": "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af",
+    "bytes": 4346
+  },
+  "pinned-inputs/ffmpeg-c7b5f1537d/COPYING.LGPLv2.1": {
+    "sha256": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30",
+    "bytes": 26517
+  },
+  "pinned-inputs/ffmpeg-c7b5f1537d/COPYING.GPLv3": {
+    "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+    "bytes": 35147
+  },
+  "pinned-inputs/ffmpeg-c7b5f1537d/COPYING.GPLv2": {
+    "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+    "bytes": 18092
+  },
+  "pinned-inputs/ffmpeg-c7b5f1537d/doc/authors.texi": {
+    "sha256": "fb5fac6dd8f7474033e933814491a8297d8723c52be4dcbcc82eef9c4f008dd2",
+    "bytes": 403
+  },
+  "pinned-inputs/ps5-opengl-sdk-1.0.2/LICENSE": {
+    "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "bytes": 35149
+  },
+  "pinned-inputs/mirror-67bada77f8a43a90da2e94e89b8e7da73c256989/LICENSE.txt": {
+    "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "bytes": 35149
+  },
+  "pinned-inputs/mirror-67bada77f8a43a90da2e94e89b8e7da73c256989/src/android/app/src/main/java/org/yuzu/yuzu_emu/fragments/LicenseBottomSheetDialogFragment.kt": {
+    "sha256": "f60729853b2cb1720b5712251b1c5266d8926f728f816fcdc6f993b9a107b4d3",
+    "bytes": 1976
+  },
+  "pinned-inputs/mirror-67bada77f8a43a90da2e94e89b8e7da73c256989/src/android/app/src/main/java/org/yuzu/yuzu_emu/fragments/LicensesFragment.kt": {
+    "sha256": "d1968b5326505e0aa5a8a80ef784554661e67dabfd8af27b93b44a849288d8ff",
+    "bytes": 4917
+  },
+  "pinned-inputs/mirror-67bada77f8a43a90da2e94e89b8e7da73c256989/src/android/app/src/main/java/org/yuzu/yuzu_emu/adapters/LicenseAdapter.kt": {
+    "sha256": "4c69d050ad9f8ed22e8ec090b11de825e2630494950380c93e252cb8618813c4",
+    "bytes": 1652
+  },
+  "pinned-inputs/mirror-67bada77f8a43a90da2e94e89b8e7da73c256989/src/android/app/src/main/java/org/yuzu/yuzu_emu/model/License.kt": {
+    "sha256": "11891da76add1151e7f152ac4150c2aa5a3b61da099c45a2315bde8f5030c341",
+    "bytes": 364
+  },
+  "pinned-inputs/mirror-67bada77f8a43a90da2e94e89b8e7da73c256989/externals/FidelityFX-FSR/license.txt": {
+    "sha256": "db089274ce766da70f5b7d791029c3486f9f9e27c8c79c652689603d3192e802",
+    "bytes": 1094
+  },
+  "pinned-inputs/mirror-67bada77f8a43a90da2e94e89b8e7da73c256989/.forgejo/workflows/license-header.yml": {
+    "sha256": "401e0d6f02c82b459d2e85d481179f47eabff3da8b8fcd25997a72596cc18103",
+    "bytes": 417
+  },
+  "pinned-inputs/mirror-67bada77f8a43a90da2e94e89b8e7da73c256989/.ci/license-header.sh": {
+    "sha256": "974ad5919b57556deae2f04a3a900ce2c854533af70ec11c9d2d4fa7d9cbeb33",
+    "bytes": 5544
+  },
+  "pinned-inputs/dav1d-54706fc6bc/COPYING": {
+    "sha256": "dd92c3c2247c5651606fc23a5e2d6a1ebc5ace9a3e49cbde0e12f05ad1cb1ee5",
+    "bytes": 1317
+  },
+  "pinned-inputs/PS5-Lapy-JB-Daemon-57fcc19/LICENSE": {
+    "sha256": "5ef18e95f617c9d3a2674cc3256f5c0d6ec2f794a57e9e40f2185dd454c9f8da",
+    "bytes": 1741
+  },
+  "pinned-inputs/fmt-12.1.0/LICENSE": {
+    "sha256": "07580f2a3b35709ce703d523f447b242f6dfec7582a8c0df102c7fa2849375f8",
+    "bytes": 1431
+  }
+}

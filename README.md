@@ -1,7 +1,33 @@
 # DirkuLator
 
-Native PS5 emulator development, with a focus on rendering correctness, reliable
-controller input, repeatable builds, and evidence-based debugging.
+**The goal is to run Nintendo Switch 2 software accurately and usefully on a
+native PS5 homebrew emulator.** The work covers CPU execution, GPU instruction
+translation, rendering, memory and synchronization, controllers, audio, and the
+native application.
+
+We want games to draw the right picture, respond correctly, and keep running.
+That means finding the cause of missing or incorrect behavior, implementing it
+in shared emulator code, and keeping a reproducible test for the result.
+Performance work should build on correctness and be measured on the target
+hardware. This is early development, with substantial work remaining.
+
+## What we are trying to achieve
+
+1. **Correct CPU and GPU behavior.** Improve instruction and API coverage using
+   source evidence and focused tests. Unsupported behavior must remain explicit;
+   shader acceptance alone is not proof that its calculations are correct.
+2. **Correct rendering.** Resolve problems such as the current white/cyan fog,
+   hard fog boundaries, and mesh/vertex shattering by tracing the responsible
+   draws, state, buffers, and translated instructions. Use difficult scenes as
+   regression cases for the shared renderer.
+3. **Reliable native execution.** Improve memory handling, GPU completion and
+   synchronization, startup/shutdown, input, and long-session stability without
+   masking faults by dropping rendering work.
+4. **Usable performance.** Profile real bottlenecks and measure under stated
+   conditions. Distinguish native PS5 results from desktop or mock tests.
+5. **Open, reproducible development.** Publish source, patch provenance, pinned
+   dependencies, build instructions, licenses, and honest results so others can
+   fork, build, investigate, and contribute.
 
 ## First development candidate: 0.5.54rc
 
@@ -55,9 +81,11 @@ render incorrectly, or affect game progress; keep backups of your own data.
 ## Development and contributions
 
 `DirkuLator` and `DirkuLator-dev` keep the project and development work separate.
-The first candidate is published on the development repository. Forks and pull
-requests are welcome. Include the revision, reproduction steps, actual test
-results, and whether evidence comes from host checks or a physical PS5.
+The first candidate is published on the development repository. Both repositories
+are public and forkable, with the inherited Git history retained. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for contribution and test expectations. Include
+the revision, reproduction steps, actual test results, and whether evidence comes
+from host checks or a physical PS5.
 
 PR research may reference **AnyPS5**, **Lichii**, and **Eden**. A relevant PR is a
 research lead until its changes have been reviewed, integrated, and tested;
@@ -76,6 +104,11 @@ diagnostics, and build/packaging code. Dependency source locations and exact
 revisions are retained in the pinned manifests and build scripts. Release
 source archives and build instructions must remain available with binary
 releases. No exclusive ownership of upstream or third-party code is claimed.
+
+See the dated [modification and provenance notice](NOTICE.md) and the
+[collected license texts and manifest](licenses/README.md). Published candidate
+tags identify their tested source and are preserved; later documentation and
+repository housekeeping changes are recorded separately in Git.
 
 ROMs, game keys, proprietary firmware/system modules, saves, credentials,
 private console captures, and local build caches are not part of this repository.

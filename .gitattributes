@@ -1,0 +1,36 @@
+# Keep Linux build scripts and source portable across Windows and WSL.
+* text=auto
+.gitattributes text eol=lf
+.gitignore text eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.c text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.hpp text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+Makefile text eol=lf
+*.diff text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.glsl text eol=lf
+*.vert text eol=lf
+*.frag text eol=lf
+*.comp text eol=lf
+
+# Preserve authored binary assets and the original license bytes exactly.
+*.png -text
+*.jpg -text
+*.jpeg -text
+*.dds -text
+*.tga -text
+*.ttf -text
+*.otf -text
+*.wav -text
+*.at9 -text
+LICENSE -text
+eden/LICENSE -text
+licenses/dependencies/** -text

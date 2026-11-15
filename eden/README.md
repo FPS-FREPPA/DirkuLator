@@ -1,5 +1,10 @@
 # DirkuLator
 
+The goal is accurate and useful Nintendo Switch 2 emulation on native PS5
+homebrew. Read the expanded [project goals and priorities](../README.md) and
+[contribution guide](../CONTRIBUTING.md). The dated modification/provenance
+notice is at [NOTICE.md](../NOTICE.md).
+
 Native PS5 emulator development, with a focus on rendering correctness, reliable
 controller input, repeatable builds, and evidence-based debugging.
 
